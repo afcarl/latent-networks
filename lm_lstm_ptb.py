@@ -564,8 +564,9 @@ def latent_lstm_layer(
             mask = mask.dimshuffle(0, 1, 'x')
 
         trng = RandomStreams(seed)
-        hdrop = trng.binomial((lstm_state_below.shape[1], options['dim']),
-                              p=0.1, n=1, dtype=theano.config.floatX)
+        hdrop = trng.binomial(
+            (lstm_state_below.shape[1], options['dim']), p=0.9, n=1,
+            dtype=theano.config.floatX)
         hdrop = is_train * hdrop + (1 - is_train) * tensor.ones_like(hdrop)
         non_seqs.append(hdrop)
 
