@@ -8,7 +8,7 @@ import theano
 import theano.tensor as T
 import theano.tensor as tensor
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
-from t8_data import Text8
+from lm_data import PTB
 
 import cPickle as pkl
 import ipdb
@@ -17,7 +17,7 @@ import copy
 
 import warnings
 import time
-
+import cPickle
 from collections import OrderedDict
 
 #from char_data_iterator import TextIterator
@@ -118,16 +118,16 @@ def gradient_clipping(grads, tparams, clip_c=1.0):
     return new_grads, not_finite, tensor.lt(clip_c, g2)
 
 
-def categorical_crossentropy(target, output):
+def categorical_crossentropy(t, o):
     '''
     Compute categorical cross-entropy between targets and model output.
     '''
-    assert (target.ndim == 2)
-    assert (output.ndim == 3)
-    output = output.reshape((output.shape[0] * output.shape[1], output.shape[2]))
-    t_flat = target.flatten()
-    probs = tensor.diag(output.T[t_flat])
-    probs = probs.reshape((target.shape[0], target.shape[1]))
+    assert (t.ndim == 2)
+    assert (o.ndim == 3)
+    o = o.reshape((o.shape[0] * o.shape[1], o.shape[2]))
+    t_flat = t.flatten()
+    probs = tensor.diag(o.T[t_flat])
+    probs = probs.reshape((t.shape[0], t.shape[1]))
     return -tensor.log(probs + 1e-6)
 
 
@@ -199,6 +199,13 @@ def load_params(path, params):
         params[kk] = pp[kk]
 
     return params
+
+
+def save_params(path, tparams):
+    params = {}
+    for kk, vv in tparams.iteritems():
+        params[kk] = vv.get_value()
+    cPickle.dump(params, open(path, 'wb'))
 
 
 # layers: 'name': ('parameter initializer', 'feedforward')
@@ -340,7 +347,6 @@ def param_init_lstm(options,
 
      params[_p(prefix,'U')] = U
      params[_p(prefix,'b')] = numpy.zeros((4 * dim,)).astype('float32')
-
      return params
 
 def lstm_layer(tparams, state_below,
@@ -495,13 +501,13 @@ def latent_lstm_layer(
               inf_mus_w, inf_mus_b,
               gen_mus_w, gen_mus_b):
 
-        p_z = tensor.nnet.softplus(tensor.dot(sbefore, trans_1_w) + trans_1_b)
+        p_z = lrelu(tensor.dot(sbefore, trans_1_w) + trans_1_b)
         z_mus = tensor.dot(p_z, z_mus_w) + z_mus_b
         z_dim = z_mus.shape[-1] / 2
         z_mu, z_sigma = z_mus[:, :z_dim], z_mus[:, z_dim:]
 
         if d_ is not None:
-            encoder_hidden = tensor.nnet.softplus(tensor.dot(concatenate([sbefore, d_], axis=1), inf_w) + inf_b)
+            encoder_hidden = lrelu(tensor.dot(concatenate([sbefore, d_], axis=1), inf_w) + inf_b)
             encoder_mus = tensor.dot(encoder_hidden, inf_mus_w) + inf_mus_b
             encoder_mu, encoder_sigma = encoder_mus[:, :z_dim], encoder_mus[:, z_dim:]
             tild_z_t = encoder_mu + g_s * tensor.exp(0.5 * encoder_sigma)
@@ -568,17 +574,11 @@ def init_params(options):
                                          dim=options['dim'])
     params = get_layer('ff')[0](options, params, prefix='ff_in_lstm',
                                 nin=options['dim_input'], nout=options['dim_proj'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_lstm',
-                                nin=options['dim'], nout=options['dim_proj'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_prev',
-                                nin=options['dim_proj'],
-                                nout=options['dim_proj'], ortho=False)
-    params = get_layer('hsoftmax')[0](options, params, prefix='ff_out_mus',
-                                      nin=options['dim_proj'],
-                                      ncls=300,
-                                      nout=options['dim_input'])
+                                ortho=True)
+    params = get_layer('ff')[0](options, params, prefix='ff_out_mus',
+                                nin=options['dim'],
+                                nout=options['dim_input'],
+                                ortho=True)
     U = numpy.concatenate([norm_weight(options['dim_z'], options['dim']),
                            norm_weight(options['dim_z'], options['dim']),
                            norm_weight(options['dim_z'], options['dim']),
@@ -589,17 +589,10 @@ def init_params(options):
                                               prefix='encoder_r',
                                               nin=options['dim_proj'],
                                               dim=options['dim'])
-    # readout
-    params = get_layer('ff')[0](options, params, prefix='ff_out_lstm_r',
-                                nin=options['dim'], nout=options['dim_proj'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_prev_r',
-                                nin=options['dim_proj'],
-                                nout=options['dim_proj'], ortho=False)
-    params = get_layer('hsoftmax')[0](options, params, prefix='ff_out_mus_r',
-                                      nin=options['dim_proj'],
-                                      ncls=300,
-                                      nout=options['dim_input'])
+    params = get_layer('ff')[0](options, params, prefix='ff_out_mus_r',
+                                nin=options['dim'],
+                                nout=options['dim_input'],
+                                ortho=True)
     #Prior Network params
     params = get_layer('ff')[0](options, params, prefix='trans_1', nin=options['dim'], nout=options['prior_hidden'], ortho=False)
     params = get_layer('ff')[0](options, params, prefix='z_mus', nin=options['prior_hidden'], nout=2 * options['dim_z'], ortho=False)
@@ -627,24 +620,22 @@ def build_rev_model(tparams, options, x, y, x_mask):
 
     xr_emb = get_layer('ff')[1](tparams, xr, options, prefix='ff_in_lstm', activ='lambda x: x')
     (states_rev, _), updates_rev = get_layer(options['encoder'])[1](tparams, xr_emb, options, prefix='encoder_r', mask=xr_mask)
-    out_lstm = get_layer('ff')[1](tparams, states_rev, options, prefix='ff_out_lstm_r', activ='linear')
-    out_prev = get_layer('ff')[1](tparams, xr_emb, options, prefix='ff_out_prev_r', activ='linear')
-    out = lrelu(out_lstm + out_prev)
     # shift mus for prediction [o4, o3, o2]
     # targets are [x3, x2, x1]
-    out = out[:-1]
+    out = states_rev[:-1]
     targets = xr[1:]
     targets_mask = xr_mask[1:]
-    nll_rev = -get_layer('hsoftmax')[1](
-        tparams, out, options, y_indexes=targets, prefix='ff_out_mus_r')
+    out_logits = get_layer('ff')[1](tparams, out, options, prefix='ff_out_mus_r', activ='linear')
+    out_probs = masked_softmax(out_logits, axis=-1)
+    nll_rev = categorical_crossentropy(targets, out_probs)
     # states_rev = [s4, s3, s2, s1]
     # cut first state out (info about x4 is in s3)
-    # posterior sees (s1, s2, s3) in order to predict x2, x3, x4
-    states_rev = states_rev[1:][::-1]
+    # posterior sees (s2, s3, s4) in order to predict x2, x3, x4
+    states_rev = states_rev[:-1][::-1]
     # ...
     assert xr.ndim == 2
     assert xr_mask.ndim == 2
-    nll_rev = (-tensor.log(nll_rev) * targets_mask).sum(0)
+    nll_rev = (nll_rev * targets_mask).sum(0)
     return nll_rev, states_rev, updates_rev
 
 
@@ -659,12 +650,14 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
         back_states=states_rev)
 
     states_gen, z, kld, rec_cost_rev = rvals[0], rvals[2], rvals[3], rvals[4]
-    # Compute parameters of the output distribution
-    out_lstm = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_lstm', activ='linear')
-    out_prev = get_layer('ff')[1](tparams, x_emb, options, prefix='ff_out_prev', activ='linear')
-    out = lrelu(out_lstm + out_prev)
-    nll_gen = get_layer('hsoftmax')[1](
-        tparams, out, options, y_indexes=y, prefix='ff_out_mus')
+    out_logits = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_mus', activ='linear')
+    out_probs = masked_softmax(out_logits, axis=-1)
+
+    x_flat = y.flatten()
+    x_flat_idx = tensor.arange(x_flat.shape[0]) * options['dim_input'] + x_flat
+    cost = -tensor.log(out_probs.flatten()[x_flat_idx])
+    cost = cost.reshape([x.shape[0], x.shape[1]])
+    nll_gen = categorical_crossentropy(y, out_probs)
     nll_gen = (nll_gen * x_mask).sum(0)
     kld = (kld * x_mask).sum(0)
     rec_cost_rev = (rec_cost_rev * x_mask).sum(0)
@@ -687,14 +680,14 @@ def pred_probs(f_log_probs, options, data, source='valid'):
         x = x.transpose(1, 0)
         y = y.transpose(1, 0)
         x_mask = x_mask.transpose(1, 0)
-        n_done += x.shape[1]
+        n_done += numpy.sum(x_mask)
 
         zmuv = numpy.random.normal(loc=0.0, scale=1.0, size=(
             x.shape[0], x.shape[1], options['dim_z'])).astype('float32')
         elbo = f_log_probs(x, y, x_mask, zmuv)
         for val in elbo:
             rvals.append(val)
-    return numpy.array(rvals).mean()
+    return numpy.exp(numpy.array(rvals).sum() / n_done)
 
 
 # optimizers
@@ -728,7 +721,7 @@ def train(dim_input=200,  # input vector dimensionality
           finish_after=10000000,  # finish after this many updates
           dispFreq=100,
           decay_c=0.,  # L2 weight decay penalty
-          lrate=0.001,
+          lrate=0.0002,
           maxlen=100,  # maximum length of the description
           optimizer='adam',
           batch_size=16,
@@ -755,6 +748,8 @@ def train(dim_input=200,  # input vector dimensionality
         str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_log.txt'
     opts = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
         str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_opts.pkl'
+    pars = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
+        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_pars.npz'
 
     print(desc)
 
@@ -763,7 +758,7 @@ def train(dim_input=200,  # input vector dimensionality
     pkl.dump(model_options, open(opts, 'wb'))
     log_file = open(desc, 'w')
 
-    data = Text8("./t8/data", 35, batch_size=model_options['batch_size'])
+    data = PTB("./experiments/data", 20, batch_size=model_options['batch_size'])
 
     print('Building model')
     params = init_params(model_options)
@@ -827,6 +822,7 @@ def train(dim_input=200,  # input vector dimensionality
     bad_counter = 0
     kl_start = model_options['kl_start']
     kl_rate = model_options['kl_rate']
+    old_valid_err = 99999
 
     for eidx in range(max_epochs):
         print("Epoch: {}".format(eidx))
@@ -875,9 +871,6 @@ def train(dim_input=200,  # input vector dimensionality
                 log_file.write(str1 + '\n')
                 log_file.flush()
 
-        if eidx in [10, 20]:
-            lrate = lrate / 2.0
-
         print 'Starting validation...'
         valid_err = pred_probs(f_log_probs, model_options, data, source='valid')
         test_err = pred_probs(f_log_probs, model_options, data, source='test')
@@ -885,6 +878,13 @@ def train(dim_input=200,  # input vector dimensionality
         str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err, test_err)
         print(str1)
         log_file.write(str1 + '\n')
+
+        if (old_valid_err < valid_err) and lrate > 0.0001:
+            lrate = lrate / 2.0
+        else:
+            save_params(pars, tparams)
+
+        old_valid_err = history_errs[-1]
 
         # finish after this many updates
         if uidx >= finish_after:

@@ -736,8 +736,8 @@ def train(dim_input=200,  # input vector dimensionality
     dim_z = 256
     encoder_hidden = dim
     learn_h0 = False
-    weight_aux = 0.05
-    weight_nll = 0.05
+    weight_aux = 0.0005
+    weight_nll = 0.0005
 
     desc = saveto + 'model_' + str(weight_aux) + '_weight_aux_' + \
         str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_log.txt'
