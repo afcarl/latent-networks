@@ -25,6 +25,7 @@ from collections import OrderedDict
 profile = False
 seed = 1234
 numpy.random.seed(seed)
+is_train = tensor.scalar('is_train')
 
 
 def param_init_hsoftmax(options, params, nin, ncls, nout, prefix='hsoftmax'):
@@ -499,7 +500,8 @@ def latent_lstm_layer(
               z_mus_w, z_mus_b,
               inf_w, inf_b,
               inf_mus_w, inf_mus_b,
-              gen_mus_w, gen_mus_b):
+              gen_mus_w, gen_mus_b,
+              hdrop=None):
 
         p_z = lrelu(tensor.dot(sbefore, trans_1_w) + trans_1_b)
         z_mus = tensor.dot(p_z, z_mus_w) + z_mus_b
@@ -526,6 +528,9 @@ def latent_lstm_layer(
             kld = tensor.sum(tild_z_t, axis=-1) * 0.
             recon_cost = tensor.sum(tild_z_t, axis=-1) * 0.
 
+        # recurrent dropout
+        if hdrop is not None:
+            sbefore = sbefore * hdrop
         z = tild_z_t
         preact = tensor.dot(sbefore, param('U')) +  tensor.dot(z, W_cond)
         preact += sbelow
@@ -557,6 +562,12 @@ def latent_lstm_layer(
                                  mask.shape[1]*mask.shape[2])).dimshuffle(0, 1, 'x')
         elif mask.ndim == 2:
             mask = mask.dimshuffle(0, 1, 'x')
+
+        trng = RandomStreams(seed)
+        hdrop = trng.binomial((lstm_state_below.shape[1], options['dim']),
+                              p=0.1, n=1, dtype=theano.config.floatX)
+        hdrop = is_train * hdrop + (1 - is_train) * tensor.ones_like(hdrop)
+        non_seqs.append(hdrop)
 
         rval, updates = theano.scan(
             _step, sequences=[mask, lstm_state_below, back_states, gaussian_s],
@@ -789,7 +800,8 @@ def train(dim_input=200,  # input vector dimensionality
     inps = [x, y, x_mask, zmuv, weight_f]
     f_log_probs = theano.function(
         inps[:-1], ELBOcost(nll_gen, kld, kld_weight=1.),
-        updates=(updates_gen + updates_rev), profile=profile)
+        updates=(updates_gen + updates_rev), profile=profile,
+        givens={is_train: numpy.float32(0.)})
     print('Done')
 
     print('Computing gradient...')
@@ -804,7 +816,8 @@ def train(dim_input=200,  # input vector dimensionality
     # forward pass + gradients
     outputs = [vae_cost, aux_cost, tot_cost, kld_cost, elbo_cost, nll_rev_cost, nll_gen_cost, non_finite]
     print('Fprop')
-    f_prop = theano.function(inps, outputs, updates=all_gsup)
+    f_prop = theano.function(inps, outputs, updates=all_gsup,
+                             givens={is_train: numpy.float32(1.)})
     print('Fupdate')
     f_update = eval(optimizer)(lr, tparams, all_gshared)
 
