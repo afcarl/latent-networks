@@ -245,6 +245,7 @@ def load_imdb_jmars(dir_path=None, max_sentence_len=16, topk=None):
     [3] Code repository https://github.com/nihalb/JMARS
     '''
     VERSION = 3
+    SPECIAL_TOKENS = ['__pad__', '__go__', '<unk>', '<S>', '</S>']
 
     if dir_path is None:
         dir_path = pjoin(".", "imdb", "data")
@@ -311,7 +312,7 @@ def load_imdb_jmars(dir_path=None, max_sentence_len=16, topk=None):
             ratings[i] = d['rating']
 
         # sort word ids by frequency except for reserved tokens.
-        idx2word = ['__pad__', '__go__', '<unk>', '<S>', '</S>']
+        idx2word = [t for t in SPECIAL_TOKENS]
         word2idx = {w: i for i, w in enumerate(idx2word)}
 
         mc_wrd = sorted(word2tf.items(), key=lambda x: x[1], reverse=True)
@@ -361,7 +362,7 @@ def load_imdb_jmars(dir_path=None, max_sentence_len=16, topk=None):
     assert data_dict.get('version', 1) >= VERSION, "Old version dectected. Delete dataset and reprocess it."
 
     if topk is not None:
-        topk += 2  # Take in account __pad__ and <unk>
+        topk += len(SPECIAL_TOKENS)  # Take in account __pad__ and <unk>
         # -= Keep the most K frequent words =-
         unk_id = data_dict['word2idx']["<unk>"]
 
