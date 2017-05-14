@@ -543,7 +543,7 @@ class IMDB_JMARS():
         """
         Add <S> and </S> tokens to each sentence and pad the batch.
         """
-        sentences = [[self.bos_id] + s + [self.eos_id] for s in sentences]
+        sentences = [[self.bos_id] + list(s) + [self.eos_id] for s in sentences]
         batch = self.pad_batch(sentences)
         # Make tuple
         x = batch[:, :-1]
