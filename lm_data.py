@@ -551,9 +551,29 @@ class IMDB_JMARS():
         m = np.not_equal(y, self.pad_id).astype('float32')
         return x, y, m
 
-    def print_batch(self, batch):
+    def batch2text(self, batch, eos_id=None):
+        sentences = []
         for i, s in enumerate(batch):
-            print("{}. ".format(i) + " ".join([self.idx2word[idx] for idx in s]))
+            sentence = []
+            for idx in s:
+                sentence.append(self.idx2word[idx])
+                if eos_id == idx:
+                    break
+
+            sentences.append(" ".join(sentence))
+
+        return sentences
+
+
+    def print_batch(self, batch, eos_id=None):
+        for i, s in enumerate(batch):
+            sentence = []
+            for idx in s:
+                sentence.append(self.idx2word[idx])
+                if eos_id == idx:
+                    break
+
+            print("{}. ".format(i) + " ".join(sentence))
 
     def get_train_batch(self, shuffle=True):
         if shuffle:

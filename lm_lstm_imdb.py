@@ -554,8 +554,11 @@ def latent_lstm_layer(
                                                      -1))
     if one_step:
         mask = mask.dimshuffle(0, 'x')
-        h, c = _step(mask, lstm_state_below, init_state, init_memory)
-        rval = [h, c]
+        _step_inps = [mask, lstm_state_below, None, gaussian_s, init_state, init_memory] + non_seqs
+        h, c, z, _, _ = _step(*_step_inps)
+        rval = [h, c, z]
+        updates = {}
+
     else:
         if mask.ndim == 3 and mask.ndim == state_below.ndim:
             mask = mask.reshape((mask.shape[0], \
@@ -682,6 +685,94 @@ def ELBOcost(rec_cost, kld, kld_weight=1.):
     return rec_cost + kld_weight * kld
 
 
+# build a sampler
+def build_sampler(tparams, options, trng):
+    last_word = T.lvector('last_word')
+    init_state = tensor.matrix('init_state', dtype='float32')
+    init_memory = tensor.matrix('init_memory', dtype='float32')
+    gaussian_sampled = tensor.matrix('gaussian', dtype='float32')
+    last_word.tag.test_value = -1 * np.ones((2,), dtype="int64")
+    init_state.tag.test_value = np.zeros((2, options['dim']), dtype="float32")
+    init_memory.tag.test_value = np.zeros((2, options['dim']), dtype="float32")
+    gaussian_sampled.tag.test_value = np.random.randn(2, 100).astype("float32")
+
+    # if it's the first word, emb should be all zero
+    x_emb = tensor.switch(last_word[:, None] < 0,
+                          tensor.alloc(0., last_word.shape[0], options['dim_proj']),
+                          get_layer('ff')[1](tparams, last_word, options,
+                                             prefix='ff_in_lstm',
+                                             activ='lambda x: x'))
+
+    # apply one step of gru layer
+    rvals, update_gen = get_layer('latent_lstm')[1](tparams, x_emb, options,
+                                            prefix='encoder',
+                                            mask=None,
+                                            one_step=True,
+                                            gaussian_s = gaussian_sampled,
+                                            back_states = None,
+                                            init_state=init_state,
+                                            init_memory=init_memory)
+    next_state, next_memory, z = rvals
+
+    # Compute parameters of the output distribution
+    logits = get_layer('ff')[1](tparams, next_state, options, prefix='ff_out_mus', activ='linear')
+    next_probs = masked_softmax(logits, axis=-1)
+    next_samples = trng.multinomial(pvals=next_probs).argmax(1)
+
+    # next word probability
+    print('Building f_next..')
+    inps = [last_word, init_state, init_memory, gaussian_sampled]
+    outs = [next_probs, next_samples, next_state, next_memory]
+    f_next = theano.function(inps, outs, name='f_next')
+    print('Done')
+
+    return f_next
+
+
+# generate sample
+def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kickstart=None, zmuv=None):
+    samples = []
+    samples_scores = 0
+    nb_samples = 1
+
+    if kickstart is not None and zmuv is not None:
+        assert kickstart.shape[1] == zmuv.shape[0]
+
+    if kickstart is not None:
+        maxlen = maxlen + len(kickstart)
+        nb_samples = kickstart.shape[1]
+
+    if zmuv is not None:
+        nb_samples = zmuv.shape[0]
+
+    # initial token is indicated by a -1 and initial state is zero
+    next_w = -1 * numpy.ones((nb_samples,)).astype('int64')
+    next_state = numpy.zeros((nb_samples, options['dim'])).astype('float32')
+    next_memory = numpy.zeros((nb_samples, options['dim'])).astype('float32')
+
+    if zmuv is None:
+        zmuv = numpy.random.normal(loc=0.0, scale=1.0,
+                                   size=(next_w.shape[0], options['dim_z'])).astype('float32')
+
+    for ii in range(maxlen):
+        inps = [next_w, next_state, next_memory, zmuv]
+        ret = f_next(*inps)
+        next_p, next_w, next_state, next_memory = ret
+
+        nw = next_w
+        if argmax:
+            nw = next_p.argmax(axis=1)
+
+        if kickstart is not None and ii < len(kickstart):
+            nw = kickstart[ii]
+
+        samples.append(nw)
+        samples_scores += np.log(next_p[np.arange(next_w.shape[0]), nw])
+
+    samples = np.stack(samples)
+    return samples, samples_scores
+
+
 def pred_probs(f_log_probs, options, data, source='valid'):
     rvals = []
     n_done = 0
@@ -765,13 +856,13 @@ def train(dim_input=200,  # input vector dimensionality
 
     print(desc)
 
+    data = IMDB_JMARS("./experiments/data", seq_len=16, batch_size=batch_size, topk=16000)
+    dim_input = data.voc_size
+
     # Model options
     model_options = locals().copy()
     pkl.dump(model_options, open(opts, 'wb'))
     log_file = open(desc, 'w')
-
-    data = IMDB_JMARS("./experiments/data", seq_len=16, batch_size=model_options['batch_size'], topk=16000)
-    model_options["dim_input"] = data.voc_size
 
     print('Building model')
     params = init_params(model_options)

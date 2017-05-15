@@ -1320,7 +1320,7 @@ def train(dim_word=100,  # word vector dimensionality
                     params = best_p
                 else:
                     params = unzip(tparams)
-                numpy.savez(saveto, **params)
+                numpy.savez(model_file, **params)
                 pkl.dump(model_options, open('%s.pkl' % saveto, 'wb'))
                 print 'Done'
 
