@@ -45,5 +45,5 @@ if __name__ == '__main__':
         'kl_start': [0.2],
         'weight_aux': [0.],
         'use-dropout': [False],
-        'learning-rate': [0.001],
+        'learning-rate': [0.0003],
         'reload': [False]})
