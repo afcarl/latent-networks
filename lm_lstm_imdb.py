@@ -1025,9 +1025,11 @@ def train(dim_input=200,  # input vector dimensionality
         print(str1)
         log_file.write(str1 + '\n')
 
-        if (old_valid_err < valid_err) and lrate > 0.0001:
-            lrate = lrate / 2.0
+        if old_valid_err < valid_err:
+            if lrate > 0.0001:
+                lrate = lrate / 2.0
         else:
+            # Save better model.
             save_params(pars, tparams)
 
         old_valid_err = history_errs[-1]
