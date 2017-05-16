@@ -14,7 +14,8 @@ import cPickle as pkl
 import ipdb
 import numpy
 import copy
-
+from costs import iwae_multi_eval
+from tqdm import tqdm
 import warnings
 import time
 import cPickle
@@ -24,6 +25,8 @@ from collections import OrderedDict
 
 profile = False
 seed = 1234
+num_iwae_samps = 10
+num_iwae_iters = 1
 numpy.random.seed(seed)
 is_train = tensor.scalar('is_train')
 
@@ -513,6 +516,8 @@ def latent_lstm_layer(
             encoder_mus = tensor.dot(encoder_hidden, inf_mus_w) + inf_mus_b
             encoder_mu, encoder_sigma = encoder_mus[:, :z_dim], encoder_mus[:, z_dim:]
             tild_z_t = encoder_mu + g_s * tensor.exp(0.5 * encoder_sigma)
+            log_pz = tensor.sum(log_prob_gaussian(tild_z_t, z_mu, z_sigma), axis=-1)
+            log_qzIx = tensor.sum(log_prob_gaussian(tild_z_t, encoder_mu, encoder_sigma), axis=-1)
             kld = gaussian_kld(encoder_mu, encoder_sigma, z_mu, z_sigma)
             kld = tensor.sum(kld, axis=-1)
             decoder_mus = tensor.dot(tild_z_t, gen_mus_w) + gen_mus_b
@@ -545,7 +550,7 @@ def latent_lstm_layer(
         c = mask * c + (1. - mask) * cell_before
         h = o * tensor.tanh(c)
         h = mask * h + (1. - mask) * sbefore
-        return h, c, z, kld, recon_cost
+        return h, c, z, log_pz, log_qzIx, kld, recon_cost
 
     lstm_state_below = tensor.dot(state_below, param('W')) + param('b')
     if state_below.ndim == 3:
@@ -555,7 +560,7 @@ def latent_lstm_layer(
     if one_step:
         mask = mask.dimshuffle(0, 'x')
         _step_inps = [mask, lstm_state_below, None, gaussian_s, init_state, init_memory] + non_seqs
-        h, c, z, _, _ = _step(*_step_inps)
+        h, c, z, _, _, _, _ = _step(*_step_inps)
         rval = [h, c, z]
         updates = {}
 
@@ -575,7 +580,7 @@ def latent_lstm_layer(
 
         rval, updates = theano.scan(
             _step, sequences=[mask, lstm_state_below, back_states, gaussian_s],
-            outputs_info = [init_state, init_memory, None, None, None],
+            outputs_info = [init_state, init_memory, None, None, None, None, None],
             name=_p(prefix, '_layers'), non_sequences=non_seqs, strict=True, n_steps=nsteps)
     return [rval, updates]
 
@@ -664,19 +669,18 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
         prefix='encoder', mask=x_mask, gaussian_s=zmuv,
         back_states=states_rev)
 
-    states_gen, z, kld, rec_cost_rev = rvals[0], rvals[2], rvals[3], rvals[4]
+    states_gen, z, log_pz, log_qzIx, kld, rec_cost_rev = rvals[0], rvals[2], rvals[3], rvals[4], rvals[5], rvals[6]
     out_logits = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_mus', activ='linear')
     out_probs = masked_softmax(out_logits, axis=-1)
 
-    x_flat = y.flatten()
-    x_flat_idx = tensor.arange(x_flat.shape[0]) * options['dim_input'] + x_flat
-    cost = -tensor.log(out_probs.flatten()[x_flat_idx])
-    cost = cost.reshape([x.shape[0], x.shape[1]])
     nll_gen = categorical_crossentropy(y, out_probs)
     nll_gen = (nll_gen * x_mask).sum(0)
+    log_pxIz = -nll_gen
+    log_pz = (log_pz * x_mask).sum(0)
+    log_qzIx = (log_qzIx * x_mask).sum(0)
     kld = (kld * x_mask).sum(0)
     rec_cost_rev = (rec_cost_rev * x_mask).sum(0)
-    return nll_gen, states_gen, kld, rec_cost_rev, updates_gen
+    return nll_gen, states_gen, kld, rec_cost_rev, updates_gen, log_pxIz, log_pz, log_qzIx
 
 
 def ELBOcost(rec_cost, kld, kld_weight=1.):
@@ -773,24 +777,38 @@ def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kic
     return samples, samples_scores
 
 
-def pred_probs(f_log_probs, options, data, source='valid'):
+def pred_probs(f_log_probs, f_iwae_eval, options, data, source='valid'):
     rvals = []
+    iwae_rvals = []
     n_done = 0
 
     next_batch = (lambda: data.get_valid_batch()) \
         if source == 'valid' else (lambda: data.get_test_batch())
-    for x, y, x_mask in next_batch():
+    nbatches = 0
+    for batch in next_batch():
+        nbatches += 1
+    iterate = next_batch()
+    for idx in tqdm(range(nbatches), ncols=80, ascii=True):
+        x, y, x_mask = next(iterate)
         x = x.transpose(1, 0)
         y = y.transpose(1, 0)
         x_mask = x_mask.transpose(1, 0)
         n_done += numpy.sum(x_mask)
-
         zmuv = numpy.random.normal(loc=0.0, scale=1.0, size=(
             x.shape[0], x.shape[1], options['dim_z'])).astype('float32')
         elbo = f_log_probs(x, y, x_mask, zmuv)
         for val in elbo:
             rvals.append(val)
-    return numpy.exp(numpy.array(rvals).sum() / n_done)
+        # IWAE numbers
+        iwae = iwae_multi_eval(
+            x, y, x_mask, num_iwae_iters, f_iwae_eval,
+            num_iwae_samps, options['dim_z'])
+        iwae = np.ravel(iwae)
+        assert len(iwae) == x.shape[1]
+        for val in iwae:
+            iwae_rvals.append(val)
+    return numpy.exp(numpy.array(rvals).sum() / n_done), \
+        numpy.exp(numpy.array(iwae_rvals).sum() / n_done)
 
 
 # optimizers
@@ -883,7 +901,8 @@ def train(dim_input=200,  # input vector dimensionality
     # build the symbolic computational graph
     nll_rev, states_rev, updates_rev = \
         build_rev_model(tparams, model_options, x, y, x_mask)
-    nll_gen, states_gen, kld, rec_cost_rev, updates_gen = \
+    nll_gen, states_gen, kld, rec_cost_rev, updates_gen, \
+        log_pxIz, log_pz, log_qzIx = \
         build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
     vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f).mean()
@@ -894,13 +913,27 @@ def train(dim_input=200,  # input vector dimensionality
     nll_rev_cost = nll_rev.mean()
     kld_cost = kld.mean()
 
+    nbatch = 0
+    for batch in data.get_valid_batch():
+        nbatch += 1
+    print('Total valid batches: {}'.format(nbatch))
+
     print('Building f_log_probs...')
     inps = [x, y, x_mask, zmuv, weight_f]
     f_log_probs = theano.function(
         inps[:-1], ELBOcost(nll_gen, kld, kld_weight=1.),
         updates=(updates_gen + updates_rev), profile=profile,
         givens={is_train: numpy.float32(0.)})
+    f_iwae_eval = theano.function(
+        inps[:-1], [log_pxIz, log_pz, log_qzIx],
+        updates=(updates_gen + updates_rev),
+        givens={is_train: numpy.float32(0.)})
     print('Done')
+
+    print('Testing valid error')
+    valid_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='valid')
+    print valid_err
+    print('DONE')
 
     print('Computing gradient...')
     grads = tensor.grad(tot_cost, itemlist(tparams))
@@ -983,10 +1016,12 @@ def train(dim_input=200,  # input vector dimensionality
                 log_file.flush()
 
         print('Starting validation...')
-        valid_err = pred_probs(f_log_probs, model_options, data, source='valid')
-        test_err = pred_probs(f_log_probs, model_options, data, source='test')
-        history_errs.append(valid_err)
-        str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err, test_err)
+        valid_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='valid')
+        test_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='test')
+        history_errs.append(valid_err[0])
+        str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err[0], test_err[0])
+        str2 = 'Valid/Test IWAE: {:.2f}, {:.2f}'.format(valid_err[1], test_err[1])
+        str1 = str1 + '\n' + str2
         print(str1)
         log_file.write(str1 + '\n')
 
@@ -1002,9 +1037,11 @@ def train(dim_input=200,  # input vector dimensionality
             print('Finishing after %d iterations!' % uidx)
             break
 
-    valid_err = pred_probs(f_log_probs, model_options, data, source='valid')
-    test_err = pred_probs(f_log_probs, model_options, data, source='test')
-    str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err, test_err)
+    valid_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='valid')
+    test_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='test')
+    str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err[0], test_err[0])
+    str2 = 'Valid/Test IWAE: {:.2f}, {:.2f}'.format(valid_err[1], test_err[1])
+    str1 = str1 + '\n' + str2
     print(str1)
     log_file.write(str1 + '\n')
     log_file.close()
