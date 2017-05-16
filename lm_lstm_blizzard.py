@@ -422,7 +422,7 @@ def latent_lstm_layer(
             recon_cost = tensor.sum(tild_z_t, axis=-1) * 0.
 
         z = tild_z_t
-        preact = tensor.dot(sbefore, param('U')) +  tensor.dot(z, W_cond)
+        preact = tensor.dot(sbefore, param('U')) #+ tensor.dot(z, W_cond)
         preact += sbelow
         preact += param('b')
 
@@ -480,11 +480,7 @@ def init_params(options):
                                 nin=options['dim'],
                                 nout=2 * options['dim_input'],
                                 ortho=False)
-    U = numpy.concatenate([norm_weight(options['dim_z'], options['dim']),
-                           norm_weight(options['dim_z'], options['dim']),
-                           norm_weight(options['dim_z'], options['dim']),
-                           norm_weight(options['dim_z'], options['dim'])], axis=1)
-    params[_p('z_cond', 'W')] = U
+    params[_p('z_cond', 'W')] = norm_weight(options['dim_z'], options['dim'])
 
     params = get_layer(options['encoder'])[0](options, params,
                                               prefix='encoder_r',
@@ -566,9 +562,11 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
         prefix='encoder', mask=x_mask, gaussian_s=zmuv,
         back_states=states_rev)
 
-    states_gen, kld, rec_cost_rev = rvals[0], rvals[3], rvals[4]
+    states_gen, z, kld, rec_cost_rev = rvals[0], rvals[2], rvals[3], rvals[4]
+    states_gen_plus_z = states_gen + T.dot(z, tparams[_p('z_cond', 'W')])
+
     # Compute parameters of the output distribution
-    out_lstm = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_lstm', activ='linear')
+    out_lstm = get_layer('ff')[1](tparams, states_gen_plus_z, options, prefix='ff_out_lstm', activ='linear')
     out_prev = get_layer('ff')[1](tparams, x_emb, options, prefix='ff_out_prev', activ='linear')
     out = lrelu(out_lstm + out_prev)
     out_mus = get_layer('ff')[1](tparams, out, options, prefix='ff_out_mus', activ='linear')
