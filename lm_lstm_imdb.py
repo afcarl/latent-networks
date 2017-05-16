@@ -1,4 +1,3 @@
-
 '''
 Build a simple neural language model using GRU units
 '''
@@ -8,20 +7,103 @@ import os
 import theano
 import theano.tensor as T
 import theano.tensor as tensor
+from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+from lm_data import IMDB_JMARS
 
 import cPickle as pkl
 import numpy
 
 import warnings
 import time
-
+import cPickle
 from collections import OrderedDict
 
 #from char_data_iterator import TextIterator
+
 profile = False
+seed = 1234
+numpy.random.seed(seed)
+is_train = tensor.scalar('is_train')
 
 
-def gradient_clipping(grads, tparams, clip_c=100):
+def param_init_hsoftmax(options, params, nin, ncls, nout, prefix='hsoftmax'):
+    nout_per_cls = (nout + ncls - 1) / ncls
+    W1 = numpy.asarray(numpy.random.normal(
+        0, 0.01, size=(nin, ncls)), dtype=theano.config.floatX)
+    b1 = numpy.asarray(numpy.zeros((ncls,)), dtype=theano.config.floatX)
+
+    # Second level of h_softmax
+    W2 = numpy.asarray(numpy.random.normal(
+        0, 0.01, size=(ncls, nin, nout_per_cls)), dtype=theano.config.floatX)
+    b2 = numpy.asarray(numpy.zeros((ncls, nout_per_cls)), dtype=theano.config.floatX)
+
+    # store some private vars
+    options['hsoftmax_ncls'] = ncls
+    options['nvocab'] = nout
+    params[_p(prefix, 'W1')] = W1
+    params[_p(prefix, 'W2')] = W2
+    params[_p(prefix, 'b1')] = b1
+    params[_p(prefix, 'b2')] = b2
+    return params
+
+
+def hsoftmax_layer(tparams, state_below, options, y_indexes=None,
+                   prefix='hsoftmax', compute_all=False, **kwargs):
+    """
+    shape of state_below is expected to be: (#tsteps, #batchsize, #dim)
+    y_indexes: a theano variable of true targets.
+    """
+    ncls = options['hsoftmax_ncls']
+    nout = options['nvocab']
+    nout_per_cls = (nout + ncls - 1) / ncls
+    state_shp = state_below.shape
+
+    if state_below.ndim == 3:
+        reshaped = 1
+        state_reshp = state_below.reshape([state_shp[0] * state_shp[1], state_shp[2]])
+        batch_size = state_shp[1] * state_shp[0]
+    else:
+        reshaped = 0
+        state_reshp = state_below
+        batch_size = state_shp[0]
+
+    if compute_all:
+        # shape: (batch_size, output_size)  (batch size after reshaping)
+        output = tensor.nnet.h_softmax(state_reshp, batch_size, nout,
+                                       ncls, nout_per_cls,
+                                       tparams[_p(prefix, 'W1')],
+                                       tparams[_p(prefix, 'b1')],
+                                       tparams[_p(prefix, 'W2')],
+                                       tparams[_p(prefix, 'b2')])
+        if reshaped:
+            output = output.reshape([state_shp[0], state_shp[1], -1])
+    else:
+        if y_indexes != None:
+            y_indexes = y_indexes.flatten()
+        # shape: (batch_size,)
+        output = tensor.nnet.h_softmax(state_reshp, batch_size, nout,
+                                       ncls, nout_per_cls,
+                                       tparams[_p(prefix, 'W1')],
+                                       tparams[_p(prefix, 'b1')],
+                                       tparams[_p(prefix, 'W2')],
+                                       tparams[_p(prefix, 'b2')], y_indexes)
+        if reshaped:
+            output = output.reshape([state_shp[0], state_shp[1]])
+    return output
+
+
+def masked_softmax(x, axis=-1, mask=None):
+    if mask is not None:
+        x = (mask * x) + (1 - mask) * (-10)
+        x = tensor.clip(x, -10., 10.)
+    e_x = tensor.exp(x - tensor.max(x, axis=axis, keepdims=True))
+    if mask is not None:
+        e_x = e_x * mask
+    softmax = e_x / (tensor.sum(e_x, axis=axis, keepdims=True) + 1e-6)
+    return softmax
+
+
+def gradient_clipping(grads, tparams, clip_c=1.0):
     g2 = 0.
     for g in grads:
         g2 += (g**2).sum()
@@ -32,6 +114,19 @@ def gradient_clipping(grads, tparams, clip_c=100):
         new_grads.append(tensor.switch(
             g2 > clip_c, g * (clip_c / g2), g))
     return new_grads, not_finite, tensor.lt(clip_c, g2)
+
+
+def categorical_crossentropy(t, o):
+    '''
+    Compute categorical cross-entropy between targets and model output.
+    '''
+    assert (t.ndim == 2)
+    assert (o.ndim == 3)
+    o = o.reshape((o.shape[0] * o.shape[1], o.shape[2]))
+    t_flat = t.flatten()
+    probs = tensor.diag(o.T[t_flat])
+    probs = probs.reshape((t.shape[0], t.shape[1]))
+    return -tensor.log(probs + 1e-6)
 
 
 # push parameters to Theano shared variables
@@ -104,11 +199,19 @@ def load_params(path, params):
     return params
 
 
+def save_params(path, tparams):
+    params = {}
+    for kk, vv in tparams.iteritems():
+        params[kk] = vv.get_value()
+    cPickle.dump(params, open(path, 'wb'))
+
+
 # layers: 'name': ('parameter initializer', 'feedforward')
 layers = {
     'ff': ('param_init_fflayer', 'fflayer'),
     'gru': ('param_init_gru', 'gru_layer'),
     'lstm': ('param_init_lstm', 'lstm_layer'),
+    'hsoftmax': ('param_init_hsoftmax', 'hsoftmax_layer'),
     'latent_lstm': ('param_init_lstm', 'latent_lstm_layer'),
 }
 
@@ -194,77 +297,6 @@ def concatenate(tensor_list, axis=0):
     return out
 
 
-class TimitData():
-    def __init__(self, fn, batch_size):
-        import numpy as np
-        data = np.load(fn)
-
-        ####
-        # IMPORTANT: u_train is the input and x_train is the target.
-        ##
-        u_train, x_train = data['u_train'], data['x_train']
-        u_valid, x_valid = data['u_valid'], data['x_valid']
-        (u_test, x_test, mask_test) = data['u_test'],  data['x_test'], data['mask_test']
-
-        # assert u_test.shape[0] == 1680
-        # assert x_test.shape[0] == 1680
-        # assert mask_test.shape[0] == 1680
-
-        self.u_train = u_train
-        self.x_train = x_train
-        self.u_valid = u_valid
-        self.x_valid = x_valid
-
-        # make multiple of batchsize
-        n_test_padded = ((u_test.shape[0] // batch_size) + 1)*batch_size
-        assert n_test_padded > u_test.shape[0]
-        pad = n_test_padded - u_test.shape[0]
-        u_test = np.pad(u_test, ((0, pad), (0, 0), (0, 0)), mode='constant')
-        x_test = np.pad(x_test, ((0, pad), (0, 0), (0, 0)), mode='constant')
-        mask_test = np.pad(mask_test, ((0, pad), (0, 0)), mode='constant')
-        self.u_test = u_test
-        self.x_test = x_test
-        self.mask_test = mask_test
-
-        self.n_train = u_train.shape[0]
-        self.n_valid = u_valid.shape[0]
-        self.n_test = u_test.shape[0]
-        self.batch_size = batch_size
-
-        print("TRAINING SAMPLES LOADED", self.u_train.shape)
-        print("TEST SAMPLES LOADED", self.u_test.shape)
-        print("VALID SAMPLES LOADED", self.u_valid.shape)
-        print("TEST AVG LEN        ", np.mean(self.mask_test.sum(axis=1)) * 200)
-        # test that x and u are correctly shifted
-        assert np.sum(self.u_train[:, 1:] - self.x_train[:, :-1]) == 0.0
-        assert np.sum(self.u_valid[:, 1:] - self.x_valid[:, :-1]) == 0.0
-        for row in range(self.u_test.shape[0]):
-            l = int(self.mask_test[row].sum())
-            if l > 0:  # if l is zero the sequence is fully padded.
-                assert np.sum(self.u_test[row, 1:l] -
-                              self.x_test[row, :l-1]) == 0.0, row
-
-    def _iter_data(self, u, x, mask=None):
-        # IMPORTANT: In SRNN (where the data come from) u refers to the input whereas x, to the target.
-        indices = range(len(u))
-        for idx in chunk(indices, n=self.batch_size):
-            u_batch, x_batch = u[idx], x[idx]
-            if mask is None:
-                mask_batch = np.ones((x_batch.shape[0], x_batch.shape[1]), dtype='float32')
-            else:
-                mask_batch = mask[idx]
-            yield u_batch, x_batch, mask_batch
-
-    def get_train_batch(self):
-        return iter(self._iter_data(self.u_train, self.x_train))
-
-    def get_valid_batch(self):
-        return iter(self._iter_data(self.u_valid, self.x_valid))
-
-    def get_test_batch(self):
-        return iter(self._iter_data(self.u_test, self.x_test, mask=self.mask_test))
-
-
 # feedforward layer: affine transformation + point-wise nonlinearity
 def param_init_fflayer(options, params, prefix='ff', nin=None, nout=None,
                        ortho=True):
@@ -280,6 +312,8 @@ def param_init_fflayer(options, params, prefix='ff', nin=None, nout=None,
 
 def fflayer(tparams, state_below, options, prefix='rconv',
             activ='lambda x: tensor.tanh(x)', **kwargs):
+    if state_below.dtype == 'int32' or state_below.dtype == 'int64':
+        return tparams[_p(prefix, 'W')][state_below] + tparams[_p(prefix, 'b')]
     return eval(activ)(
         tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
         tparams[_p(prefix, 'b')])
@@ -311,7 +345,6 @@ def param_init_lstm(options,
 
      params[_p(prefix,'U')] = U
      params[_p(prefix,'b')] = numpy.zeros((4 * dim,)).astype('float32')
-
      return params
 
 def lstm_layer(tparams, state_below,
@@ -464,7 +497,8 @@ def latent_lstm_layer(
               z_mus_w, z_mus_b,
               inf_w, inf_b,
               inf_mus_w, inf_mus_b,
-              gen_mus_w, gen_mus_b):
+              gen_mus_w, gen_mus_b,
+              hdrop=None):
 
         p_z = lrelu(tensor.dot(sbefore, trans_1_w) + trans_1_b)
         z_mus = tensor.dot(p_z, z_mus_w) + z_mus_b
@@ -481,14 +515,19 @@ def latent_lstm_layer(
             decoder_mus = tensor.dot(tild_z_t, gen_mus_w) + gen_mus_b
             decoder_mu, decoder_sigma = decoder_mus[:, :d_.shape[1]], decoder_mus[:, d_.shape[1]:]
             decoder_mu = tensor.tanh(decoder_mu)
+            decoder_mu = T.clip(decoder_mu, -10., 10.)
+            decoder_sigma = T.clip(decoder_sigma, -10., 10.)
             disc_d_ = theano.gradient.disconnected_grad(d_)
-            recon_cost = -log_prob_gaussian(disc_d_, decoder_mu, decoder_sigma)
+            recon_cost = tensor.sqr(decoder_mu - disc_d_)
             recon_cost = tensor.sum(recon_cost, axis=-1)
         else:
             tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_sigma)
             kld = tensor.sum(tild_z_t, axis=-1) * 0.
             recon_cost = tensor.sum(tild_z_t, axis=-1) * 0.
 
+        # recurrent dropout
+        if hdrop is not None:
+            sbefore = sbefore * hdrop
         z = tild_z_t
         preact = tensor.dot(sbefore, param('U')) +  tensor.dot(z, W_cond)
         preact += sbelow
@@ -512,14 +551,24 @@ def latent_lstm_layer(
                                                      -1))
     if one_step:
         mask = mask.dimshuffle(0, 'x')
-        h, c = _step(mask, lstm_state_below, init_state, init_memory)
-        rval = [h, c]
+        _step_inps = [mask, lstm_state_below, None, gaussian_s, init_state, init_memory] + non_seqs
+        h, c, z, _, _ = _step(*_step_inps)
+        rval = [h, c, z]
+        updates = {}
+
     else:
         if mask.ndim == 3 and mask.ndim == state_below.ndim:
             mask = mask.reshape((mask.shape[0], \
                                  mask.shape[1]*mask.shape[2])).dimshuffle(0, 1, 'x')
         elif mask.ndim == 2:
             mask = mask.dimshuffle(0, 1, 'x')
+
+        trng = RandomStreams(seed)
+        hdrop = trng.binomial(
+            (lstm_state_below.shape[1], options['dim']), p=0.9, n=1,
+            dtype=theano.config.floatX)
+        hdrop = is_train * hdrop + (1 - is_train) * tensor.ones_like(hdrop)
+        non_seqs.append(hdrop)
 
         rval, updates = theano.scan(
             _step, sequences=[mask, lstm_state_below, back_states, gaussian_s],
@@ -537,17 +586,11 @@ def init_params(options):
                                          dim=options['dim'])
     params = get_layer('ff')[0](options, params, prefix='ff_in_lstm',
                                 nin=options['dim_input'], nout=options['dim_proj'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_lstm',
-                                nin=options['dim'], nout=options['dim'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_prev',
-                                nin=options['dim_proj'],
-                                nout=options['dim'], ortho=False)
+                                ortho=True)
     params = get_layer('ff')[0](options, params, prefix='ff_out_mus',
                                 nin=options['dim'],
-                                nout=2 * options['dim_input'],
-                                ortho=False)
+                                nout=options['dim_input'],
+                                ortho=True)
     U = numpy.concatenate([norm_weight(options['dim_z'], options['dim']),
                            norm_weight(options['dim_z'], options['dim']),
                            norm_weight(options['dim_z'], options['dim']),
@@ -558,20 +601,10 @@ def init_params(options):
                                               prefix='encoder_r',
                                               nin=options['dim_proj'],
                                               dim=options['dim'])
-    # readout
-    params = get_layer('ff')[0](options, params, prefix='ff_in_lstm_r',
-                                nin=options['dim_input'], nout=options['dim_proj'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_lstm_r',
-                                nin=options['dim'], nout=options['dim'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_prev_r',
-                                nin=options['dim_proj'],
-                                nout=options['dim'], ortho=False)
     params = get_layer('ff')[0](options, params, prefix='ff_out_mus_r',
                                 nin=options['dim'],
-                                nout=2 * options['dim_input'],
-                                ortho=False)
+                                nout=options['dim_input'],
+                                ortho=True)
     #Prior Network params
     params = get_layer('ff')[0](options, params, prefix='trans_1', nin=options['dim'], nout=options['prior_hidden'], ortho=False)
     params = get_layer('ff')[0](options, params, prefix='z_mus', nin=options['prior_hidden'], nout=2 * options['dim_z'], ortho=False)
@@ -588,7 +621,7 @@ def build_rev_model(tparams, options, x, y, x_mask):
     # concatenate first x and all targets y
     # x = [x1, x2, x3]
     # y = [x2, x3, x4]
-    xc = tensor.concatenate([x[:1, :, :], y], axis=0)
+    xc = tensor.concatenate([x[:1, :], y], axis=0)
     # xc = [x1, x2, x3, x4]
     xc_mask = tensor.concatenate([tensor.alloc(1, 1, x_mask.shape[1]), x_mask], axis=0)
     # xc_mask = [1, 1, 1, 0]
@@ -597,65 +630,171 @@ def build_rev_model(tparams, options, x, y, x_mask):
     # xr_mask = [0, 1, 1, 1]
     xr_mask = xc_mask[::-1]
 
-    xr_emb = get_layer('ff')[1](tparams, xr, options, prefix='ff_in_lstm_r', activ='lrelu')
+    xr_emb = get_layer('ff')[1](tparams, xr, options, prefix='ff_in_lstm', activ='lambda x: x')
     (states_rev, _), updates_rev = get_layer(options['encoder'])[1](tparams, xr_emb, options, prefix='encoder_r', mask=xr_mask)
-    out_lstm = get_layer('ff')[1](tparams, states_rev, options, prefix='ff_out_lstm_r', activ='linear')
-    out_prev = get_layer('ff')[1](tparams, xr_emb, options, prefix='ff_out_prev_r', activ='linear')
-    out = lrelu(out_lstm + out_prev)
-    out_mus = get_layer('ff')[1](tparams, out, options, prefix='ff_out_mus_r', activ='linear')
-    out_mu, out_logvar = out_mus[:, :, :options['dim_input']], out_mus[:, :, options['dim_input']:]
-
     # shift mus for prediction [o4, o3, o2]
     # targets are [x3, x2, x1]
-    out_mu = out_mu[:-1]
-    out_logvar = out_logvar[:-1]
+    out = states_rev[:-1]
     targets = xr[1:]
     targets_mask = xr_mask[1:]
+    out_logits = get_layer('ff')[1](tparams, out, options, prefix='ff_out_mus_r', activ='linear')
+    out_probs = masked_softmax(out_logits, axis=-1)
+    nll_rev = categorical_crossentropy(targets, out_probs)
     # states_rev = [s4, s3, s2, s1]
     # cut first state out (info about x4 is in s3)
     # posterior sees (s2, s3, s4) in order to predict x2, x3, x4
     states_rev = states_rev[:-1][::-1]
     # ...
+    assert xr.ndim == 2
     assert xr_mask.ndim == 2
-    assert xr.ndim == 3
-    log_p_y = log_prob_gaussian(targets, mean=out_mu, log_var=out_logvar)
-    log_p_y = T.sum(log_p_y, axis=-1)     # Sum over output dim.
-    nll_rev = -log_p_y                    # NLL
     nll_rev = (nll_rev * targets_mask).sum(0)
-    return nll_rev, states_rev, updates_rev
+    get_states_rev = theano.function([x, y, x_mask], [states_rev])
+    return nll_rev, states_rev, updates_rev, get_states_rev
 
 
 # build a training model
 def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     # disconnecting reconstruction gradient from going in the backward encoder
-    x_emb = get_layer('ff')[1](tparams, x, options, prefix='ff_in_lstm', activ='lrelu')
+    x_emb = get_layer('ff')[1](tparams, x, options, prefix='ff_in_lstm', activ='lambda x: x')
     rvals, updates_gen = get_layer('latent_lstm')[1](
         tparams, state_below=x_emb, options=options,
         prefix='encoder', mask=x_mask, gaussian_s=zmuv,
         back_states=states_rev)
 
     states_gen, kld, rec_cost_rev = rvals[0], rvals[3], rvals[4]
-    # Compute parameters of the output distribution
-    out_lstm = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_lstm', activ='linear')
-    out_prev = get_layer('ff')[1](tparams, x_emb, options, prefix='ff_out_prev', activ='linear')
-    out = lrelu(out_lstm + out_prev)
-    out_mus = get_layer('ff')[1](tparams, out, options, prefix='ff_out_mus', activ='linear')
-    out_mu, out_logvar = out_mus[:, :, :options['dim_input']], out_mus[:, :, options['dim_input']:]
+    out_logits = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_mus', activ='linear')
+    out_probs = masked_softmax(out_logits, axis=-1)
 
-    # Compute gaussian log prob of target
-    log_p_y = log_prob_gaussian(y, mean=out_mu, log_var=out_logvar)
-    log_p_y = T.sum(log_p_y, axis=-1)  # Sum over output dim.
-    nll_gen = -log_p_y  # NLL
+    x_flat = y.flatten()
+    x_flat_idx = tensor.arange(x_flat.shape[0]) * options['dim_input'] + x_flat
+    cost = -tensor.log(out_probs.flatten()[x_flat_idx])
+    cost = cost.reshape([x.shape[0], x.shape[1]])
+    nll_gen = categorical_crossentropy(y, out_probs)
     nll_gen = (nll_gen * x_mask).sum(0)
     kld = (kld * x_mask).sum(0)
     rec_cost_rev = (rec_cost_rev * x_mask).sum(0)
     return nll_gen, states_gen, kld, rec_cost_rev, updates_gen
 
+def build_interpolate_model(tparams, options, x, x_mask, zmuv, states_rev, trng):
+    # disconnecting reconstruction gradient from going in the backward encoder
+    x_emb = get_layer('ff')[1](tparams, x, options, prefix='ff_in_lstm', activ='lambda x: x')
+    rvals, updates_gen = get_layer('latent_lstm')[1](
+        tparams, state_below=x_emb, options=options,
+        prefix='encoder', mask=x_mask, gaussian_s=zmuv,
+        back_states=states_rev)
+
+    states_gen, z = rvals[0], rvals[2]
+
+    states_gen = get_layer('ff')[1](tparams, z, options,  prefix='gen_mus', activ='lambda x:x')
+    decoder_mu, decoder_sigma = states_gen[:, :, :states_rev.shape[2]], states_gen[:, :, states_rev.shape[2]:]
+    states_gen = decoder_mu + decoder_sigma
+    out_logits = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_mus', activ='linear')
+    #out_probs = masked_softmax(out_logits, axis=-1)
+    logit_shp = out_logits.shape
+
+    out_probs = tensor.nnet.softmax(
+                    out_logits.reshape([logit_shp[0]*logit_shp[1], logit_shp[2]]))
+    next_sample = trng.multinomial(pvals=out_probs)
+    next_sample = next_sample.reshape([logit_shp[0], logit_shp[1], logit_shp[2]])
+    #reshaped = out_probs[0].dimshuffle(0, 1, 3, 2).reshape((out_probs[0].shape[0]*out_probs[0].shape[3], out_probs[0].shape[2]))
+    #S_reshaped = trng.multinomial(n=1, pvals=reshaped)
+    #V = out_probs[0]
+    #S = S_reshaped.reshape((V.shape[0], 1, V.shape[3], V.shape[2])).dimshuffle(0, 1, 3, 2)
+
+    return next_sample, states_gen, updates_gen, z
 
 def ELBOcost(rec_cost, kld, kld_weight=1.):
     assert kld.ndim == 1
     assert rec_cost.ndim == 1
     return rec_cost + kld_weight * kld
+
+
+# build a sampler
+def build_sampler(tparams, options, trng):
+    last_word = T.lvector('last_word')
+    init_state = tensor.matrix('init_state', dtype='float32')
+    init_memory = tensor.matrix('init_memory', dtype='float32')
+    gaussian_sampled = tensor.matrix('gaussian', dtype='float32')
+    last_word.tag.test_value = -1 * np.ones((2,), dtype="int64")
+    init_state.tag.test_value = np.zeros((2, options['dim']), dtype="float32")
+    init_memory.tag.test_value = np.zeros((2, options['dim']), dtype="float32")
+    gaussian_sampled.tag.test_value = np.random.randn(2, 100).astype("float32")
+
+    # if it's the first word, emb should be all zero
+    x_emb = tensor.switch(last_word[:, None] < 0,
+                          tensor.alloc(0., last_word.shape[0], options['dim_proj']),
+                          get_layer('ff')[1](tparams, last_word, options,
+                                             prefix='ff_in_lstm',
+                                             activ='lambda x: x'))
+
+    # apply one step of gru layer
+    rvals, update_gen = get_layer('latent_lstm')[1](tparams, x_emb, options,
+                                            prefix='encoder',
+                                            mask=None,
+                                            one_step=True,
+                                            gaussian_s = gaussian_sampled,
+                                            back_states = None,
+                                            init_state=init_state,
+                                            init_memory=init_memory)
+    next_state, next_memory, z = rvals
+
+    # Compute parameters of the output distribution
+    logits = get_layer('ff')[1](tparams, next_state, options, prefix='ff_out_mus', activ='linear')
+    next_probs = masked_softmax(logits, axis=-1)
+    next_samples = trng.multinomial(pvals=next_probs).argmax(1)
+
+    # next word probability
+    print('Building f_next..')
+    inps = [last_word, init_state, init_memory, gaussian_sampled]
+    outs = [next_probs, next_samples, next_state, next_memory]
+    f_next = theano.function(inps, outs, name='f_next')
+    print('Done')
+
+    return f_next
+
+
+# generate sample
+def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kickstart=None, zmuv=None):
+    samples = []
+    samples_scores = 0
+    nb_samples = 1
+
+    if kickstart is not None and zmuv is not None:
+        assert kickstart.shape[1] == zmuv.shape[0]
+
+    if kickstart is not None:
+        maxlen = maxlen + len(kickstart)
+        nb_samples = kickstart.shape[1]
+
+    if zmuv is not None:
+        nb_samples = zmuv.shape[0]
+
+    # initial token is indicated by a -1 and initial state is zero
+    next_w = -1 * numpy.ones((nb_samples,)).astype('int64')
+    next_state = numpy.zeros((nb_samples, options['dim'])).astype('float32')
+    next_memory = numpy.zeros((nb_samples, options['dim'])).astype('float32')
+
+    if zmuv is None:
+        zmuv = numpy.random.normal(loc=0.0, scale=1.0,
+                                   size=(next_w.shape[0], options['dim_z'])).astype('float32')
+
+    for ii in range(maxlen):
+        inps = [next_w, next_state, next_memory, zmuv]
+        ret = f_next(*inps)
+        next_p, next_w, next_state, next_memory = ret
+
+        nw = next_w
+        if argmax:
+            nw = next_p.argmax(axis=1)
+
+        if kickstart is not None and ii < len(kickstart):
+            nw = kickstart[ii]
+
+        samples.append(nw)
+        samples_scores += np.log(next_p[np.arange(next_w.shape[0]), nw])
+
+    samples = np.stack(samples)
+    return samples, samples_scores
 
 
 def pred_probs(f_log_probs, options, data, source='valid'):
@@ -665,17 +804,17 @@ def pred_probs(f_log_probs, options, data, source='valid'):
     next_batch = (lambda: data.get_valid_batch()) \
         if source == 'valid' else (lambda: data.get_test_batch())
     for x, y, x_mask in next_batch():
-        x = x.transpose(1, 0, 2)
-        y = y.transpose(1, 0, 2)
+        x = x.transpose(1, 0)
+        y = y.transpose(1, 0)
         x_mask = x_mask.transpose(1, 0)
-        n_done += x.shape[1]
+        n_done += numpy.sum(x_mask)
 
         zmuv = numpy.random.normal(loc=0.0, scale=1.0, size=(
             x.shape[0], x.shape[1], options['dim_z'])).astype('float32')
         elbo = f_log_probs(x, y, x_mask, zmuv)
         for val in elbo:
             rvals.append(val)
-    return numpy.array(rvals).mean()
+    return numpy.exp(numpy.array(rvals).sum() / n_done)
 
 
 # optimizers
@@ -709,7 +848,7 @@ def train(dim_input=200,  # input vector dimensionality
           finish_after=10000000,  # finish after this many updates
           dispFreq=100,
           decay_c=0.,  # L2 weight decay penalty
-          lrate=0.001,
+          lrate=0.0002,
           maxlen=100,  # maximum length of the description
           optimizer='adam',
           batch_size=16,
@@ -724,48 +863,56 @@ def train(dim_input=200,  # input vector dimensionality
           use_dropout=False,
           reload_=False,
           kl_start=0.2,
-          weight_aux=0.0005,
+          weight_aux=0.,
           kl_rate=0.0003):
 
-    prior_hidden = 1200
-    dim_z = 256
-    encoder_hidden = 1200
+    prior_hidden = dim
+    dim_z = 100
+    encoder_hidden = dim
     learn_h0 = False
-    weight_aux = 0.0
-    weight_nll = 1.
 
-    desc = saveto + 'model_' + str(weight_aux) + '_weight_aux_' + \
+    desc = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
         str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_log.txt'
-    opts = saveto + 'model_' + str(weight_aux) + '_weight_aux_' + \
+    opts = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
         str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_opts.pkl'
+    pars = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
+        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_pars.npz'
+
+    print(desc)
+
+    data = IMDB_JMARS("./experiments/data", seq_len=16, batch_size=batch_size, topk=16000)
+    dim_input = data.voc_size
 
     # Model options
     model_options = locals().copy()
     pkl.dump(model_options, open(opts, 'wb'))
     log_file = open(desc, 'w')
 
-    data = TimitData("/data/lisatmp3/anirudhg/timit_raw_batchsize64_seqlen40.npz", batch_size=model_options['batch_size'])
-
     print('Building model')
     params = init_params(model_options)
     tparams = init_tparams(params)
 
-    x = tensor.tensor3('x')
-    y = tensor.tensor3('y')
+    x = tensor.lmatrix('x')
+    y = tensor.lmatrix('y')
     x_mask = tensor.matrix('x_mask')
+    # Debug test_value
+    x.tag.test_value = np.random.rand(11, 20).astype("int64")
+    y.tag.test_value = np.random.rand(11, 20).astype("int64")
+    x_mask.tag.test_value = np.ones((11, 20)).astype("float32")
+
     zmuv = tensor.tensor3('zmuv')
     weight_f = tensor.scalar('weight_f')
     lr = tensor.scalar('lr')
 
     # build the symbolic computational graph
-    nll_rev, states_rev, updates_rev = \
+    nll_rev, states_rev, updates_rev, get_states_rev = \
         build_rev_model(tparams, model_options, x, y, x_mask)
     nll_gen, states_gen, kld, rec_cost_rev, updates_gen = \
         build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
     vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f).mean()
     elbo_cost = ELBOcost(nll_gen, kld, kld_weight=1.).mean()
-    aux_cost = (numpy.float32(weight_aux) * rec_cost_rev + weight_nll * nll_rev).mean()
+    aux_cost = (numpy.float32(weight_aux) * (rec_cost_rev + nll_rev)).mean()
     tot_cost = (vae_cost + aux_cost)
     nll_gen_cost = nll_gen.mean()
     nll_rev_cost = nll_rev.mean()
@@ -775,14 +922,15 @@ def train(dim_input=200,  # input vector dimensionality
     inps = [x, y, x_mask, zmuv, weight_f]
     f_log_probs = theano.function(
         inps[:-1], ELBOcost(nll_gen, kld, kld_weight=1.),
-        updates=(updates_gen + updates_rev), profile=profile)
+        updates=(updates_gen + updates_rev), profile=profile,
+        givens={is_train: numpy.float32(0.)})
     print('Done')
 
     print('Computing gradient...')
     grads = tensor.grad(tot_cost, itemlist(tparams))
     print('Done')
 
-    all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 100.)
+    all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 5.)
     # update function
     all_gshared = [theano.shared(p.get_value() * 0., name='%s_grad' % k)
                    for k, p in tparams.iteritems()]
@@ -790,7 +938,8 @@ def train(dim_input=200,  # input vector dimensionality
     # forward pass + gradients
     outputs = [vae_cost, aux_cost, tot_cost, kld_cost, elbo_cost, nll_rev_cost, nll_gen_cost, non_finite]
     print('Fprop')
-    f_prop = theano.function(inps, outputs, updates=all_gsup)
+    f_prop = theano.function(inps, outputs, updates=all_gsup,
+                             givens={is_train: numpy.float32(1.)})
     print('Fupdate')
     f_update = eval(optimizer)(lr, tparams, all_gshared)
 
@@ -808,7 +957,7 @@ def train(dim_input=200,  # input vector dimensionality
     bad_counter = 0
     kl_start = model_options['kl_start']
     kl_rate = model_options['kl_rate']
-    old_valid_err = numpy.inf
+    old_valid_err = 99999
 
     for eidx in range(max_epochs):
         print("Epoch: {}".format(eidx))
@@ -817,9 +966,9 @@ def train(dim_input=200,  # input vector dimensionality
 
         for x, y, x_mask in data.get_train_batch():
             # Transpose data to have the time steps on dimension 0.
-            x = x.transpose(1, 0, 2)
-            y = y.transpose(1, 0, 2)
-            x_mask = x_mask.transpose(1, 0)
+            x = x.transpose(1, 0).astype('int32')
+            y = y.transpose(1, 0).astype('int32')
+            x_mask = x_mask.transpose(1, 0).astype('float32')
 
             n_samples += x.shape[1]
             uidx += 1
@@ -829,11 +978,14 @@ def train(dim_input=200,  # input vector dimensionality
             ud_start = time.time()
             # compute cost, grads and copy grads to shared variables
             zmuv = numpy.random.normal(loc=0.0, scale=1.0, size=(x.shape[0], x.shape[1], model_options['dim_z'])).astype('float32')
-            vae_cost_np, aux_cost_np, tot_cost_np, kld_cost_np, elbo_cost_np, nll_rev_cost_np, nll_gen_cost_np, not_finite = \
+            vae_cost_np, aux_cost_np, tot_cost_np, kld_cost_np, \
+                elbo_cost_np, nll_rev_cost_np, nll_gen_cost_np, not_finite_np = \
                 f_prop(x, y, x_mask, zmuv, np.float32(kl_start))
-            if not_finite:
+            if numpy.isnan(tot_cost_np) or numpy.isinf(tot_cost_np) or not_finite_np:
+                print('Nan cost... skipping')
                 continue
-            f_update(numpy.float32(lrate))
+            else:
+                f_update(numpy.float32(lrate))
 
             # update costs
             tr_costs[0].append(vae_cost_np)
@@ -854,18 +1006,20 @@ def train(dim_input=200,  # input vector dimensionality
                 log_file.write(str1 + '\n')
                 log_file.flush()
 
-        print 'Starting validation...'
+        print('Starting validation...')
         valid_err = pred_probs(f_log_probs, model_options, data, source='valid')
         test_err = pred_probs(f_log_probs, model_options, data, source='test')
         history_errs.append(valid_err)
         str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err, test_err)
+        print(str1)
+        log_file.write(str1 + '\n')
 
         if (old_valid_err < valid_err) and lrate > 0.0001:
             lrate = lrate / 2.0
+        else:
+            save_params(pars, tparams)
 
         old_valid_err = history_errs[-1]
-        print(str1)
-        log_file.write(str1 + '\n')
 
         # finish after this many updates
         if uidx >= finish_after:
