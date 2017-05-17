@@ -874,7 +874,6 @@ def train(dim_input=200,  # input vector dimensionality
           use_dropout=False,
           reload_=False,
           kl_start=0.2,
-          shift_pred=0,
           weight_aux=0.,
           kl_rate=0.0003):
 
@@ -884,11 +883,11 @@ def train(dim_input=200,  # input vector dimensionality
     learn_h0 = False
 
     desc = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
-        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_log_' + str(shift_pred) + '.txt'
+        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_log.txt'
     opts = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
-        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_opts_' + str(shift_pred) + '.pkl'
+        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_opts.pkl'
     pars = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
-        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_pars_' + str(shift_pred) + '.npz'
+        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_pars.npz'
 
     print(desc)
 

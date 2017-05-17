@@ -39,10 +39,10 @@ if __name__ == '__main__':
         'model': ['./experiments/imdb/'],
         'dim_input': [-1],  # Determine but the dataset.
         'dim': [500],
-        'dim_proj': [500],
+        'dim_proj': [300],
         'optimizer': ['adam'],
         'decay-c': [0.],
-        'kl_start': [1.0],
+        'kl_start': [1.],
         'weight_aux': [0.],
         'use-dropout': [False],
         'learning-rate': [0.001],
