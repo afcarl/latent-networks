@@ -743,23 +743,24 @@ def build_sampler(tparams, options, trng, provide_z=False):
 
 # generate sample
 def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kickstart=None, zmuv=None,
-               unk_id=None, eos_id=None):
+               unk_id=None, eos_id=None, bos_id=None):
+    assert bos_id is not None
     samples = []
     samples_scores = 0
     nb_samples = 1
 
     if kickstart is not None and zmuv is not None:
-        assert kickstart.shape[1] == zmuv.shape[0]
+        assert kickstart.shape[1] == zmuv.shape[1]
 
     if kickstart is not None:
         maxlen = maxlen + len(kickstart)
         nb_samples = kickstart.shape[1]
 
     if zmuv is not None:
-        nb_samples = zmuv.shape[0]
+        nb_samples = zmuv.shape[1]
 
     # initial token is indicated by a -1 and initial state is zero
-    next_w = -1 * numpy.ones((nb_samples,)).astype('int64')
+    next_w = bos_id * numpy.ones((nb_samples,)).astype('int64')
     next_state = numpy.zeros((nb_samples, options['dim'])).astype('float32')
     next_memory = numpy.zeros((nb_samples, options['dim'])).astype('float32')
 
@@ -769,7 +770,7 @@ def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kic
                 loc=0.0, scale=1.0,
                 size=(next_w.shape[0], options['dim_z'])).astype('float32')
         else:
-            zmuv_t = zmuv[:, ii, :]
+            zmuv_t = zmuv[ii, :, :]
 
         inps = [next_w, next_state, next_memory, zmuv_t]
         ret = f_next(*inps)
