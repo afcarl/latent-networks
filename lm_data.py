@@ -521,6 +521,7 @@ class IMDB_JMARS():
         self.voc_size = len(self.idx2word)  # # of possible words
         self.seq_len = seq_len           # length of input sequences
         self.pad_id = self.word2idx['__pad__']
+        self.unk_id = self.word2idx['<unk>']
         self.bos_id = self.word2idx['<S>']
         self.eos_id = self.word2idx['</S>']
         self.rng_seed = rng_seed

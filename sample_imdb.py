@@ -116,7 +116,8 @@ def main():
         # build the symbolic computational graph
         nll_rev, states_rev, updates_rev = \
             build_rev_model(tparams, model_options, x, y, x_mask)
-        nll_gen, states_gen, kld, rec_cost_rev, updates_gen = \
+        nll_gen, states_gen, kld, rec_cost_rev, updates_gen, \
+            log_pxIz, log_pz, log_qzIx = \
             build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
         print('Building f_log_probs...')
@@ -127,11 +128,15 @@ def main():
             updates=(updates_gen + updates_rev),
             givens={is_train: np.float32(0.)}
         )
+        f_iwae_eval = theano.function(
+            inps, [log_pxIz, log_pz, log_qzIx],
+            updates=(updates_gen + updates_rev),
+            givens={is_train: np.float32(0.)})
 
         print('Done')
-        valid_err = pred_probs(f_log_probs, model_options, data, source='valid')
+        valid_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='valid')
         print("Valid: {}".format(valid_err))
-        test_err = pred_probs(f_log_probs, model_options, data, source='test')
+        test_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='test')
         print("Test: {}".format(test_err))
 
     trng = RandomStreams(args.seed)

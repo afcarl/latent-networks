@@ -1044,6 +1044,7 @@ def train(dim_input=200,  # input vector dimensionality
             if lrate > 0.0001:
                 lrate = lrate / 2.0
         else:
+            # Save better model.
             save_params(pars, tparams)
 
         old_valid_err = history_errs[-1]
