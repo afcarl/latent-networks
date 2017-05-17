@@ -448,24 +448,25 @@ def latent_lstm_layer(
         p_z = lrelu(tensor.dot(sbefore, trans_1_w) + trans_1_b)
         z_mus = tensor.dot(p_z, z_mus_w) + z_mus_b
         z_dim = z_mus.shape[-1] / 2
-        z_mu, z_sigma = z_mus[:, :z_dim], z_mus[:, z_dim:]
+        z_mu, z_logvar = z_mus[:, :z_dim], z_mus[:, z_dim:]
 
         if d_ is not None:
             encoder_hidden = lrelu(tensor.dot(concatenate([sbefore, d_], axis=1), inf_w) + inf_b)
             encoder_mus = tensor.dot(encoder_hidden, inf_mus_w) + inf_mus_b
             encoder_mu, encoder_logvar = encoder_mus[:, :z_dim], encoder_mus[:, z_dim:]
             tild_z_t = encoder_mu + g_s * tensor.exp(0.5 * encoder_logvar)
-            kld = gaussian_kld(encoder_mu, encoder_logvar, z_mu, z_sigma)
+            kld = gaussian_kld(encoder_mu, encoder_logvar, z_mu, z_logvar)
             kld = tensor.sum(kld, axis=-1)
             decoder_mus = tensor.dot(tild_z_t, gen_mus_w) + gen_mus_b
-            decoder_mu, decoder_sigma = decoder_mus[:, :d_.shape[1]], decoder_mus[:, d_.shape[1]:]
-            decoder_sigma = tensor.clip(decoder_sigma, -8., 8.)  # Unused since we do L2 cost.
+            decoder_mu, decoder_logvar = decoder_mus[:, :d_.shape[1]], decoder_mus[:, d_.shape[1]:]
+            decoder_logvar = tensor.clip(decoder_logvar, -8., 8.)  # Unused since we do L2 cost.
             decoder_mu = tensor.tanh(decoder_mu)
             disc_d_ = theano.gradient.disconnected_grad(d_)
-            recon_cost = (disc_d_ - decoder_mu) ** 2.0
+            recon_cost = -log_prob_gaussian(disc_d_, decoder_mu, decoder_logvar)
+            #recon_cost = (disc_d_ - decoder_mu) ** 2.0
             recon_cost = tensor.sum(recon_cost, axis=-1)
         else:
-            tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_sigma)
+            tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_logvar)
             kld = tensor.sum(tild_z_t, axis=-1) * 0.
             recon_cost = tensor.sum(tild_z_t, axis=-1) * 0.
 
@@ -1029,6 +1030,7 @@ def train(dim_input=3,  # input vector dimensionality
         print('Starting validation...')
         valid_err = pred_probs(f_log_probs, model_options, iamondb_valid, batch_size, source='valid')
         history_errs.append(valid_err)
+        str1 = 'Valid ELBO: {:.2f}'.format(valid_err)
 
         old_valid_err = history_errs[-1]
         print(str1)
