@@ -188,7 +188,7 @@ def main():
             print("Samples")
             data.print_batch(batch[0][[0]], eos_id=data.eos_id, print_number=False)
             for i in np.linspace(0, 1, 11):
-                print("i: {}".format(i), end="")
+                print("{}: ".format(i), end="")
                 z = (i * z1) + ((1 - i) * z2)  # Interpolate latent
                 sample, sample_score = gen_sample(tparams, f_next, model_options,
                                                   maxlen=seqlen, argmax=False, zmuv=z.transpose(1, 0, 2),
@@ -201,7 +201,7 @@ def main():
             print("Argmax")
             data.print_batch(batch[0][[0]], eos_id=data.eos_id, print_number=False)
             for i in np.linspace(0, 1, 11):
-                print("i: {}".format(i), end="")
+                print("{}: ".format(i), end="")
                 z = (i * z1) + ((1 - i) * z2)  # Interpolate latent
                 sample, sample_score = gen_sample(tparams, f_next, model_options,
                                                   maxlen=seqlen, argmax=True, zmuv=z.transpose(1, 0, 2),
