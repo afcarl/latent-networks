@@ -17,7 +17,7 @@ def main(job_id, params):
         weight_aux=params['weight_aux'][0],
         batch_size=20,
         valid_batch_size=32,
-        dispFreq=10,
+        dispFreq=100,
         saveFreq=1000,
         sampleFreq=1000,
         dataset=None,
@@ -44,7 +44,7 @@ if __name__ == '__main__':
         'optimizer': ['adam'],
         'decay-c': [0.],
         'kl_start': [0.2],
-        'weight_aux': [0.1],
+        'weight_aux': [0.],
         'use-dropout': [False],
         'learning-rate': [0.001],
         'reload': [False]})

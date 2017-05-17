@@ -147,6 +147,13 @@ def load_params(path, params):
     return params
 
 
+def save_params(path, tparams):
+    params = {}
+    for kk, vv in tparams.iteritems():
+        params[kk] = vv.get_value()
+    cPickle.dump(params, open(path, 'wb'))
+
+
 # layers: 'name': ('parameter initializer', 'feedforward')
 layers = {
     'ff': ('param_init_fflayer', 'fflayer'),
@@ -438,15 +445,13 @@ def latent_lstm_layer(
               inf_mus_w, inf_mus_b,
               gen_mus_w, gen_mus_b):
 
-        p_z = tensor.nnet.softplus(tensor.dot(sbefore, trans_1_w) + trans_1_b)
+        p_z = lrelu(tensor.dot(sbefore, trans_1_w) + trans_1_b)
         z_mus = tensor.dot(p_z, z_mus_w) + z_mus_b
         z_dim = z_mus.shape[-1] / 2
         z_mu, z_sigma = z_mus[:, :z_dim], z_mus[:, z_dim:]
-        # z_mu = T.clip(z_mu, -8., 8.)
-        # z_sigma = T.clip(z_sigma, -8., 8.)
 
         if d_ is not None:
-            encoder_hidden = tensor.nnet.softplus(tensor.dot(concatenate([sbefore, d_], axis=1), inf_w) + inf_b)
+            encoder_hidden = lrelu(tensor.dot(concatenate([sbefore, d_], axis=1), inf_w) + inf_b)
             encoder_mus = tensor.dot(encoder_hidden, inf_mus_w) + inf_mus_b
             encoder_mu, encoder_sigma = encoder_mus[:, :z_dim], encoder_mus[:, z_dim:]
             tild_z_t = encoder_mu + g_s * tensor.exp(0.5 * encoder_sigma)
@@ -454,11 +459,10 @@ def latent_lstm_layer(
             kld = tensor.sum(kld, axis=-1)
             decoder_mus = tensor.dot(tild_z_t, gen_mus_w) + gen_mus_b
             decoder_mu, decoder_sigma = decoder_mus[:, :d_.shape[1]], decoder_mus[:, d_.shape[1]:]
+            decoder_sigma = tensor.clip(decoder_sigma, -8., 8.)
             decoder_mu = tensor.tanh(decoder_mu)
-            decoder_mu = T.clip(decoder_mu, -10., 10.)
-            decoder_sigma = T.clip(decoder_sigma, -10., 10.)
             disc_d_ = theano.gradient.disconnected_grad(d_)
-            recon_cost = (tensor.exp(0.5 * decoder_sigma) + tensor.sqr(disc_d_ - decoder_mu)/(2 * tensor.sqr(tensor.exp(0.5 * decoder_sigma))))
+            recon_cost = (disc_d_ - decoder_mu) ** 2.0
             recon_cost = tensor.sum(recon_cost, axis=-1)
         else:
             tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_sigma)
@@ -568,8 +572,9 @@ def build_rev_model(tparams, options, x, y, x_mask):
     # y = [x2, x3, x4]
     xc = tensor.concatenate([x[:1, :, :], y], axis=0)
     # xc = [x1, x2, x3, x4]
-    x1_mask = tensor.alloc(0, 1, x_mask.shape[1])  # Assume x1 is "start of sentence" token.
-    xc_mask = tensor.concatenate([x1_mask, x_mask], axis=0)
+    xc_mask = tensor.concatenate([tensor.alloc(1, 1, x_mask.shape[1]), x_mask], axis=0)
+    #x1_mask = tensor.alloc(0, 1, x_mask.shape[1])  # Assume x1 is "start of sentence" token.
+    #xc_mask = tensor.concatenate([x1_mask, x_mask], axis=0)
     # xc_mask = [1, 1, 1, 0]
     # xr = [x4, x3, x2, x1]
     xr = xc[::-1]
@@ -610,8 +615,8 @@ def build_rev_model(tparams, options, x, y, x_mask):
     targets_mask = xr_mask[1:]
     # states_rev = [s4, s3, s2, s1]
     # cut first state out (info about x4 is in s3)
-    # posterior sees (s1, s2, s3) in order to predict x2, x3, x4
-    states_rev = states_rev[1:][::-1]
+    # posterior sees (s2, s3, s4) in order to predict x2, x3, x4
+    states_rev = states_rev[:-1][::-1]
     # ...
     assert xr_mask.ndim == 2
     assert xr.ndim == 3
@@ -626,9 +631,6 @@ def build_rev_model(tparams, options, x, y, x_mask):
     # ...
     nll_rev = nll_BiGauss(targets, out_mu, out_logvar, corr, binary)
     nll_rev = nll_rev.reshape((x_shape[0], x_shape[1]))
-    #log_p_y = log_prob_gaussian(targets, mean=out_mu, log_var=out_logvar)
-    #log_p_y = T.sum(log_p_y, axis=-1)     # Sum over output dim.
-    #nll_rev = -log_p_y                    # NLL
     nll_rev = (nll_rev * targets_mask).sum(0)
     return nll_rev, states_rev, updates_rev
 
@@ -661,8 +663,8 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
 
     # Get parameters for the output distribution.
     ff_out = get_layer('ff')[1](tparams, out, options, prefix='ff_out', activ='linear')
-    out_mu = T.clip(_slice(ff_out, 'mu'), -8., 8.)
-    out_logvar = T.clip(_slice(ff_out, 'logvar'), -8., 8.)
+    out_mu = _slice(ff_out, 'mu')
+    out_logvar = _slice(ff_out, 'logvar')
     corr = T.tanh(_slice(ff_out, 'corr'))
     binary = T.nnet.sigmoid(_slice(ff_out, 'binary'))
 
@@ -676,10 +678,6 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     # Compute gaussian log prob of target
     nll_gen = nll_BiGauss(y, out_mu, out_logvar, corr, binary)
     nll_gen = nll_gen.reshape((x_shape[0], x_shape[1]))
-
-    # log_p_y = log_prob_gaussian(y, mean=out_mu, log_var=out_logvar)
-    # log_p_y = T.sum(log_p_y, axis=-1)  # Sum over output dim.
-    # nll_gen = -log_p_y  # NLL
     nll_gen = (nll_gen * x_mask).sum(0)
     kld = (kld * x_mask).sum(0)
     rec_cost_rev = (rec_cost_rev * x_mask).sum(0)
@@ -882,7 +880,7 @@ def train(dim_input=3,  # input vector dimensionality
 
     desc = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' +  str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_log.txt'
     opts = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' +  str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_opts.pkl'
-    model_file = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' +  str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_model.npz'
+    pars = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' +  str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_pars.npz'
 
     print(desc)
 
@@ -909,8 +907,8 @@ def train(dim_input=3,  # input vector dimensionality
     params = init_params(model_options)
 
     # reload parameters
-    if reload_ and os.path.isfile(model_file):
-        params = load_params(model_file, params)
+    if reload_ and os.path.isfile(pars):
+        params = load_params(pars, params)
 
     tparams = init_tparams(params)
 
@@ -948,31 +946,11 @@ def train(dim_input=3,  # input vector dimensionality
         updates=(updates_gen + updates_rev), profile=profile)
     print('Done')
 
-
-    # reload parameters
-    if reload_ and os.path.isfile(model_file):
-        #valid_err = pred_probs(f_log_probs, model_options, iamondb_valid, batch_size, source='valid')
-        #print("Valid: {}".format(valid_err))
-
-        trng = RandomStreams(42)
-        f_next = build_sampler(tparams, model_options, trng)
-        normalized_sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=200, argmax=False)
-
-        from iamondb_utils import plot_lines_iamondb_example
-        # Un-normlize data
-        sample = iamondb.X_mean + normalized_sample * iamondb.X_std
-        sample[:, :, 0] = normalized_sample[:, :, 0]
-        print(sample_score)
-        plot_lines_iamondb_example(sample[0], show=True)
-        from ipdb import set_trace; set_trace()
-        sys.exit()
-
-
     print('Computing gradient...')
     grads = tensor.grad(tot_cost, itemlist(tparams))
     print('Done')
 
-    all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 5.)
+    all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 100.)
     # update function
     all_gshared = [theano.shared(p.get_value() * 0., name='%s_grad' % k)
                    for k, p in tparams.iteritems()]
@@ -998,6 +976,7 @@ def train(dim_input=3,  # input vector dimensionality
     bad_counter = 0
     kl_start = model_options['kl_start']
     kl_rate = model_options['kl_rate']
+    old_valid_err = numpy.inf
 
     for eidx in range(max_epochs):
         print("Epoch: {}".format(eidx))
@@ -1047,46 +1026,22 @@ def train(dim_input=3,  # input vector dimensionality
                 log_file.write(str1 + '\n')
                 log_file.flush()
 
-        if eidx in [10, 20]:
-            lrate = lrate / 2.0
-
         print('Starting validation...')
         valid_err = pred_probs(f_log_probs, model_options, iamondb_valid, batch_size, source='valid')
         history_errs.append(valid_err)
 
-        # Print validation
-        str1 = 'Valid ELBO: {:.2f}'.format(valid_err)
+        old_valid_err = history_errs[-1]
         print(str1)
         log_file.write(str1 + '\n')
 
-        if uidx == 0 or valid_err <= np.min(history_errs):
-            best_p = unzip(tparams)
-            bad_counter = 0
-
-            print('Saving...', end='')
-            if best_p is not None:
-                params = best_p
-            else:
-                params = unzip(tparams)
-            numpy.savez(model_file, **params)
-            pkl.dump(model_options, open(opts, 'wb'))
-            print('Done')
-
-        if len(history_errs) > patience and valid_err >= np.min(history_errs[:-patience]):
-            bad_counter += 1
-            if bad_counter > patience:
-                print('Early Stop!')
-                break
+        if old_valid_err < valid_err:
+            if lrate > 0.0001:
+                lrate = lrate / 2.0
+        else:
+            # Save better model.
+            save_params(pars, tparams)
 
     log_file.close()
-
-    if best_p is not None:
-        zipp(best_p, tparams)
-
-    params = copy.copy(best_p)
-    numpy.savez(model_file, zipped_params=best_p,
-                history_errs=history_errs,
-                **params)
 
     return valid_err
 
