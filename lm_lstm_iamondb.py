@@ -663,8 +663,8 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
 
     # Get parameters for the output distribution.
     ff_out = get_layer('ff')[1](tparams, out, options, prefix='ff_out', activ='linear')
-    out_mu = _slice(ff_out, 'mu')
-    out_logvar = _slice(ff_out, 'logvar')
+    out_mu = T.clip(_slice(ff_out, 'mu'), -10., 10.)
+    out_logvar = T.clip(_slice(ff_out, 'logvar'), -10., 10.)
     corr = T.tanh(_slice(ff_out, 'corr'))
     binary = T.nnet.sigmoid(_slice(ff_out, 'binary'))
 
@@ -873,9 +873,9 @@ def train(dim_input=3,  # input vector dimensionality
           weight_aux=0.,
           kl_rate=0.0003):
 
-    prior_hidden = dim
-    dim_z = 256  # Like VRNN
-    encoder_hidden = dim
+    prior_hidden = 150  # Like VRNN
+    dim_z = 50  # Like VRNN
+    encoder_hidden = 150  # Like VRNN
     learn_h0 = False
 
     desc = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' +  str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_log.txt'

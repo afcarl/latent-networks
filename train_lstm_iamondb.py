@@ -15,7 +15,7 @@ def main(job_id, params):
         optimizer=params['optimizer'][0],
         dim_proj=params['dim_proj'][0],
         weight_aux=params['weight_aux'][0],
-        batch_size=20,
+        batch_size=20,  # Like VRNN
         valid_batch_size=32,
         dispFreq=100,
         saveFreq=1000,
@@ -39,12 +39,12 @@ if __name__ == '__main__':
     main(0, {
         'model': [exp_dir],
         'dim_input': [3],
-        'dim': [1200],
-        'dim_proj': [600],
+        'dim': [1200],  # Like VRNN
+        'dim_proj': [250],  # Like VRNN
         'optimizer': ['adam'],
         'decay-c': [0.],
         'kl_start': [0.2],
         'weight_aux': [0.],
         'use-dropout': [False],
-        'learning-rate': [0.001],
+        'learning-rate': [0.0003],
         'reload': [False]})
