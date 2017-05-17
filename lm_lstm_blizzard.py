@@ -18,12 +18,12 @@ from collections import OrderedDict
 from blizzard import Blizzard_tbptt
 from util import Iterator
 #from char_data_iterator import TextIterator
-
 profile = False
 seed = 1234
 numpy.random.seed(seed)
 
-def gradient_clipping(grads, tparams, clip_c=1.0):
+
+def gradient_clipping(grads, tparams, clip_c=100):
     g2 = 0.
     for g in grads:
         g2 += (g**2).sum()
@@ -194,77 +194,6 @@ def concatenate(tensor_list, axis=0):
         offset += tt.shape[axis]
 
     return out
-
-
-class TimitData():
-    def __init__(self, fn, batch_size):
-        import numpy as np
-        data = np.load(fn)
-
-        ####
-        # IMPORTANT: u_train is the input and x_train is the target.
-        ##
-        u_train, x_train = data['u_train'], data['x_train']
-        u_valid, x_valid = data['u_valid'], data['x_valid']
-        (u_test, x_test, mask_test) = data['u_test'],  data['x_test'], data['mask_test']
-
-        # assert u_test.shape[0] == 1680
-        # assert x_test.shape[0] == 1680
-        # assert mask_test.shape[0] == 1680
-
-        self.u_train = u_train
-        self.x_train = x_train
-        self.u_valid = u_valid
-        self.x_valid = x_valid
-
-        # make multiple of batchsize
-        n_test_padded = ((u_test.shape[0] // batch_size) + 1)*batch_size
-        assert n_test_padded > u_test.shape[0]
-        pad = n_test_padded - u_test.shape[0]
-        u_test = np.pad(u_test, ((0, pad), (0, 0), (0, 0)), mode='constant')
-        x_test = np.pad(x_test, ((0, pad), (0, 0), (0, 0)), mode='constant')
-        mask_test = np.pad(mask_test, ((0, pad), (0, 0)), mode='constant')
-        self.u_test = u_test
-        self.x_test = x_test
-        self.mask_test = mask_test
-
-        self.n_train = u_train.shape[0]
-        self.n_valid = u_valid.shape[0]
-        self.n_test = u_test.shape[0]
-        self.batch_size = batch_size
-
-        print("TRAINING SAMPLES LOADED", self.u_train.shape)
-        print("TEST SAMPLES LOADED", self.u_test.shape)
-        print("VALID SAMPLES LOADED", self.u_valid.shape)
-        print("TEST AVG LEN        ", np.mean(self.mask_test.sum(axis=1)) * 200)
-        # test that x and u are correctly shifted
-        assert np.sum(self.u_train[:, 1:] - self.x_train[:, :-1]) == 0.0
-        assert np.sum(self.u_valid[:, 1:] - self.x_valid[:, :-1]) == 0.0
-        for row in range(self.u_test.shape[0]):
-            l = int(self.mask_test[row].sum())
-            if l > 0:  # if l is zero the sequence is fully padded.
-                assert np.sum(self.u_test[row, 1:l] -
-                              self.x_test[row, :l-1]) == 0.0, row
-
-    def _iter_data(self, u, x, mask=None):
-        # IMPORTANT: In SRNN (where the data come from) u refers to the input whereas x, to the target.
-        indices = range(len(u))
-        for idx in chunk(indices, n=self.batch_size):
-            u_batch, x_batch = u[idx], x[idx]
-            if mask is None:
-                mask_batch = np.ones((x_batch.shape[0], x_batch.shape[1]), dtype='float32')
-            else:
-                mask_batch = mask[idx]
-            yield u_batch, x_batch, mask_batch
-
-    def get_train_batch(self):
-        return iter(self._iter_data(self.u_train, self.x_train))
-
-    def get_valid_batch(self):
-        return iter(self._iter_data(self.u_valid, self.x_valid))
-
-    def get_test_batch(self):
-        return iter(self._iter_data(self.u_test, self.x_test, mask=self.mask_test))
 
 
 # feedforward layer: affine transformation + point-wise nonlinearity
@@ -468,15 +397,13 @@ def latent_lstm_layer(
               inf_mus_w, inf_mus_b,
               gen_mus_w, gen_mus_b):
 
-        p_z = tensor.nnet.softplus(tensor.dot(sbefore, trans_1_w) + trans_1_b)
+        p_z = lrelu(tensor.dot(sbefore, trans_1_w) + trans_1_b)
         z_mus = tensor.dot(p_z, z_mus_w) + z_mus_b
         z_dim = z_mus.shape[-1] / 2
         z_mu, z_sigma = z_mus[:, :z_dim], z_mus[:, z_dim:]
-        z_mu = T.clip(z_mu, -8., 8.)
-        z_sigma = T.clip(z_sigma, -8., 8.)
 
         if d_ is not None:
-            encoder_hidden = tensor.nnet.softplus(tensor.dot(concatenate([sbefore, d_], axis=1), inf_w) + inf_b)
+            encoder_hidden = lrelu(tensor.dot(concatenate([sbefore, d_], axis=1), inf_w) + inf_b)
             encoder_mus = tensor.dot(encoder_hidden, inf_mus_w) + inf_mus_b
             encoder_mu, encoder_sigma = encoder_mus[:, :z_dim], encoder_mus[:, z_dim:]
             tild_z_t = encoder_mu + g_s * tensor.exp(0.5 * encoder_sigma)
@@ -485,15 +412,8 @@ def latent_lstm_layer(
             decoder_mus = tensor.dot(tild_z_t, gen_mus_w) + gen_mus_b
             decoder_mu, decoder_sigma = decoder_mus[:, :d_.shape[1]], decoder_mus[:, d_.shape[1]:]
             decoder_mu = tensor.tanh(decoder_mu)
-<<<<<<< HEAD
-            decoder_mu = T.clip(decoder_mu, -8., 8.)
-            decoder_sigma = T.clip(decoder_sigma, -8., 8.)
-=======
-            decoder_mu = T.clip(decoder_mu, -10., 10.)
-            decoder_sigma = T.clip(decoder_sigma, -10., 10.)
->>>>>>> 2cedae0253b87dec5dcb6e39d36bf2d811884420
             disc_d_ = theano.gradient.disconnected_grad(d_)
-            recon_cost = (tensor.exp(0.5 * decoder_sigma) + tensor.sqr(disc_d_ - decoder_mu)/(2 * tensor.sqr(tensor.exp(0.5 * decoder_sigma))))
+            recon_cost = -log_prob_gaussian(disc_d_, decoder_mu, decoder_sigma)
             recon_cost = tensor.sum(recon_cost, axis=-1)
         else:
             tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_sigma)
@@ -555,12 +475,6 @@ def init_params(options):
     params = get_layer('ff')[0](options, params, prefix='ff_out_prev',
                                 nin=options['dim_proj'],
                                 nout=options['dim'], ortho=False)
-<<<<<<< HEAD
-    params = get_layer('ff')[0](options, params, prefix='ff_out_z',
-                                nin=options['dim_z'],
-                                nout=options['dim'], ortho=False)
-=======
->>>>>>> 2cedae0253b87dec5dcb6e39d36bf2d811884420
     params = get_layer('ff')[0](options, params, prefix='ff_out_mus',
                                 nin=options['dim'],
                                 nout=2 * options['dim_input'],
@@ -602,11 +516,6 @@ def init_params(options):
 
 def build_rev_model(tparams, options, x, y, x_mask):
     # for the backward rnn, we just need to invert x and x_mask
-<<<<<<< HEAD
-    xr = x[::-1]
-    yr = y[::-1]
-    xr_mask = x_mask[::-1]
-=======
     # concatenate first x and all targets y
     # x = [x1, x2, x3]
     # y = [x2, x3, x4]
@@ -618,7 +527,6 @@ def build_rev_model(tparams, options, x, y, x_mask):
     xr = xc[::-1]
     # xr_mask = [0, 1, 1, 1]
     xr_mask = xc_mask[::-1]
->>>>>>> 2cedae0253b87dec5dcb6e39d36bf2d811884420
 
     xr_emb = get_layer('ff')[1](tparams, xr, options, prefix='ff_in_lstm_r', activ='lrelu')
     (states_rev, _), updates_rev = get_layer(options['encoder'])[1](tparams, xr_emb, options, prefix='encoder_r', mask=xr_mask)
@@ -627,20 +535,6 @@ def build_rev_model(tparams, options, x, y, x_mask):
     out = lrelu(out_lstm + out_prev)
     out_mus = get_layer('ff')[1](tparams, out, options, prefix='ff_out_mus_r', activ='linear')
     out_mu, out_logvar = out_mus[:, :, :options['dim_input']], out_mus[:, :, options['dim_input']:]
-<<<<<<< HEAD
-    out_mu = T.clip(out_mu, -8., 8.)
-    out_logvar = T.clip(out_logvar, -8., 8.)
-
-    # ...
-    log_p_y = log_prob_gaussian(yr, mean=out_mu, log_var=out_logvar)
-    log_p_y = T.sum(log_p_y, axis=-1)     # Sum over output dim.
-    nll_rev = -log_p_y                    # NLL
-    nll_rev = (nll_rev * xr_mask).sum(0)
-    return nll_rev, states_rev[::-1], updates_rev
-=======
-    # clip reverse prediction
-    out_mu = T.clip(out_mu, -10., 10.)
-    out_logvar = T.clip(out_logvar, -10., 10.)
 
     # shift mus for prediction [o4, o3, o2]
     # targets are [x3, x2, x1]
@@ -650,8 +544,8 @@ def build_rev_model(tparams, options, x, y, x_mask):
     targets_mask = xr_mask[1:]
     # states_rev = [s4, s3, s2, s1]
     # cut first state out (info about x4 is in s3)
-    # posterior sees (s1, s2, s3) in order to predict x2, x3, x4
-    states_rev = states_rev[1:][::-1]
+    # posterior sees (s2, s3, s4) in order to predict x2, x3, x4
+    states_rev = states_rev[:-1][::-1]
     # ...
     assert xr_mask.ndim == 2
     assert xr.ndim == 3
@@ -660,7 +554,6 @@ def build_rev_model(tparams, options, x, y, x_mask):
     nll_rev = -log_p_y                    # NLL
     nll_rev = (nll_rev * targets_mask).sum(0)
     return nll_rev, states_rev, updates_rev
->>>>>>> 2cedae0253b87dec5dcb6e39d36bf2d811884420
 
 
 # build a training model
@@ -672,20 +565,13 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
         prefix='encoder', mask=x_mask, gaussian_s=zmuv,
         back_states=states_rev)
 
-    states_gen, z, kld, rec_cost_rev = rvals[0], rvals[2], rvals[3], rvals[4]
+    states_gen, kld, rec_cost_rev = rvals[0], rvals[3], rvals[4]
     # Compute parameters of the output distribution
     out_lstm = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_lstm', activ='linear')
     out_prev = get_layer('ff')[1](tparams, x_emb, options, prefix='ff_out_prev', activ='linear')
-<<<<<<< HEAD
-    out_z = get_layer('ff')[1](tparams, z, options, prefix='ff_out_z', activ='linear')
-    out = lrelu(out_lstm + out_prev + out_z)
-=======
     out = lrelu(out_lstm + out_prev)
->>>>>>> 2cedae0253b87dec5dcb6e39d36bf2d811884420
     out_mus = get_layer('ff')[1](tparams, out, options, prefix='ff_out_mus', activ='linear')
     out_mu, out_logvar = out_mus[:, :, :options['dim_input']], out_mus[:, :, options['dim_input']:]
-    out_mu = T.clip(out_mu, -8., 8.)
-    out_logvar = T.clip(out_logvar, -8., 8.)
 
     # Compute gaussian log prob of target
     log_p_y = log_prob_gaussian(y, mean=out_mu, log_var=out_logvar)
@@ -707,15 +593,6 @@ def pred_probs(f_log_probs, options, data, source='valid'):
     rvals = []
     n_done = 0
 
-<<<<<<< HEAD
-    #next_batch = (lambda: data.get_valid_batch()) \
-    #    if source == 'valid' else (lambda: data.get_test_batch())
-    #for x, y, x_mask in next_batch():
-        #x = x.transpose(1, 0, 2)
-        #y = y.transpose(1, 0, 2)
-        #x_mask = x_mask.transpose(1, 0)
-=======
->>>>>>> 2cedae0253b87dec5dcb6e39d36bf2d811884420
     for data_ in data:
         x = data_[0][0]
         y = data_[1][0]
@@ -776,20 +653,19 @@ def train(dim_input=200,  # input vector dimensionality
           use_dropout=False,
           reload_=False,
           kl_start=0.2,
-          weight_aux=0.,
+          weight_aux=0.0005,
           kl_rate=0.0003):
 
-    prior_hidden = dim
-    dim_z = 256
-    encoder_hidden = dim
+    kl_rate = 0.0001  # SRNN paper
+    batch_size = 128  # SRNN paper
+    prior_hidden = 1024
+    dim_z = 256  # SRNN
+    encoder_hidden = 1024
     learn_h0 = False
 
     desc = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' +  str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_log.txt'
     opts = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' +  str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_opts.pkl'
-<<<<<<< HEAD
-=======
     model_file = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' +  str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_model.npz'
->>>>>>> 2cedae0253b87dec5dcb6e39d36bf2d811884420
 
     print(desc)
 
@@ -798,23 +674,11 @@ def train(dim_input=200,  # input vector dimensionality
     pkl.dump(model_options, open(opts, 'wb'))
     log_file = open(desc, 'w')
 
-<<<<<<< HEAD
-    #data = TimitData("timit_raw_batchsize64_seqlen40.npz", batch_size=model_options['batch_size'])
 
     x_dim = 200
     data_path = '/data/lisatmp3/chungjun/data/blizzard_unseg/'
     file_name = 'blizzard_unseg_tbptt'
 
-
-
-
-=======
-
-    x_dim = 200
-    data_path = '/scratch/macote/blizzard_unseg/'
-    file_name = 'blizzard_unseg_tbptt'
-
->>>>>>> 2cedae0253b87dec5dcb6e39d36bf2d811884420
     normal_params = np.load(data_path + file_name + '_normal.npz')
     X_mean = normal_params['X_mean']
     X_std = normal_params['X_std']
@@ -831,10 +695,7 @@ def train(dim_input=200,  # input vector dimensionality
                                 file_name=file_name,
                                 X_mean=X_mean,
                                 X_std=X_std)
-<<<<<<< HEAD
-=======
 
->>>>>>> 2cedae0253b87dec5dcb6e39d36bf2d811884420
     train_d_ = Iterator(train_data, batch_size, start=0, end=2040064)
     valid_d_ = Iterator(valid_data, batch_size, start=2040064, end=2152704)
     print('Building model')
@@ -873,11 +734,7 @@ def train(dim_input=200,  # input vector dimensionality
     grads = tensor.grad(tot_cost, itemlist(tparams))
     print('Done')
 
-<<<<<<< HEAD
-    all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 10.)
-=======
-    all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 5.)
->>>>>>> 2cedae0253b87dec5dcb6e39d36bf2d811884420
+    all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 100.)
     # update function
     all_gshared = [theano.shared(p.get_value() * 0., name='%s_grad' % k)
                    for k, p in tparams.iteritems()]
@@ -903,27 +760,17 @@ def train(dim_input=200,  # input vector dimensionality
     bad_counter = 0
     kl_start = model_options['kl_start']
     kl_rate = model_options['kl_rate']
+    old_valid_err = numpy.inf
 
     for eidx in range(max_epochs):
         print("Epoch: {}".format(eidx))
         n_samples = 0
         tr_costs = [[], [], [], [], [], [], []]
 
-<<<<<<< HEAD
-        #for x, y, x_mask in data.get_train_batch():
-=======
->>>>>>> 2cedae0253b87dec5dcb6e39d36bf2d811884420
         for data_ in train_d_:
             x = data_[0][0]
             y = data_[1][0]
             x_mask = np.ones((x.shape[0], x.shape[1]), dtype='float32')
-<<<<<<< HEAD
-            # Transpose data to have the time steps on dimension 0.
-            #x = x.transpose(1, 0, 2)
-            #y = y.transpose(1, 0, 2)
-            #x_mask = x_mask.transpose(1, 0)
-=======
->>>>>>> 2cedae0253b87dec5dcb6e39d36bf2d811884420
 
             n_samples += x.shape[1]
             uidx += 1
@@ -960,14 +807,16 @@ def train(dim_input=200,  # input vector dimensionality
                 log_file.write(str1 + '\n')
                 log_file.flush()
 
-        if eidx in [10, 20]:
-            lrate = lrate / 2.0
-
         print 'Starting validation...'
         valid_err = pred_probs(f_log_probs, model_options, valid_d_, source='valid')
         test_err = pred_probs(f_log_probs, model_options, valid_d_, source='test')
         history_errs.append(valid_err)
         str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err, test_err)
+
+        if (old_valid_err < valid_err) and lrate > 0.0001:
+            lrate = lrate / 2.0
+
+        old_valid_err = history_errs[-1]
         print(str1)
         log_file.write(str1 + '\n')
 
