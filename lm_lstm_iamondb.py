@@ -998,11 +998,6 @@ def train(dim_input=3,  # input vector dimensionality
             zmuv = numpy.random.normal(loc=0.0, scale=1.0, size=(x.shape[0], x.shape[1], model_options['dim_z'])).astype('float32')
             vae_cost_np, aux_cost_np, tot_cost_np, kld_cost_np, elbo_cost_np, nll_rev_cost_np, nll_gen_cost_np, not_finite_np = \
                 f_prop(x, y, x_mask, zmuv, np.float32(kl_start))
-            if numpy.isnan(tot_cost_np) or numpy.isinf(tot_cost_np) or not_finite_np:
-                print('Nan cost... skipping')
-                continue
-            else:
-                f_update(numpy.float32(lrate))
 
             # update costs
             tr_costs[0].append(vae_cost_np)
@@ -1022,6 +1017,12 @@ def train(dim_input=3,  # input vector dimensionality
                 print(str1)
                 log_file.write(str1 + '\n')
                 log_file.flush()
+
+            if numpy.isnan(tot_cost_np) or numpy.isinf(tot_cost_np) or not_finite_np:
+                print('Nan cost... skipping')
+                continue
+            else:
+                f_update(numpy.float32(lrate))
 
         print('Starting validation...')
         valid_err = pred_probs(f_log_probs, model_options, iamondb_valid, batch_size, source='valid')
