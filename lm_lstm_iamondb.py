@@ -13,12 +13,9 @@ from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 import cPickle as pkl
 from ipdb import set_trace as dbg
 import numpy
-import copy
-import sys
 
 import warnings
 import time
-import matplotlib.pyplot as plt
 
 from collections import OrderedDict
 
@@ -151,7 +148,7 @@ def save_params(path, tparams):
     params = {}
     for kk, vv in tparams.iteritems():
         params[kk] = vv.get_value()
-    cPickle.dump(params, open(path, 'wb'))
+    pkl.dump(params, open(path, 'wb'))
 
 
 # layers: 'name': ('parameter initializer', 'feedforward')
