@@ -69,20 +69,23 @@ def gaussian_kld(mu_left, logvar_left, mu_right, logvar_right):
     return gauss_klds
 
 
-def nll_BiGauss(y, mu, logvar, corr, binary):
+def nll_BiGauss(y, mu, sigma, corr, binary):
     """
     Gaussian mixture model negative log-likelihood
     Parameters
     ----------
     y      : TensorVariable
     mu     : FullyConnected (Linear)
-    logvar : FullyConnected (Linear)
+    sigma : FullyConnected (Linear)
+
+    References
+    ----------
+    This code was adapted from
+    https://github.com/jych/cle/blob/master/cle/cost/__init__.py#L123
     """
     mu_1, mu_2 = mu[:, 0].reshape((-1, 1)), mu[:, 1].reshape((-1, 1))
 
-    logvar_1, logvar_2 = logvar[:, 0].reshape((-1, 1)), logvar[:, 1].reshape((-1, 1))
-    logsig_1, logsig_2 = 0.5 * logvar_1, 0.5 * logvar_2
-    sig_1, sig_2 = T.exp(logsig_1), T.exp(logsig_2)
+    sig_1, sig_2 = sigma[:, 0].reshape((-1, 1)), sigma[:, 1].reshape((-1, 1))
 
     y0 = y[:, :, 0].reshape((-1, 1))
     y1 = y[:, :, 1].reshape((-1, 1))
@@ -92,7 +95,7 @@ def nll_BiGauss(y, mu, logvar, corr, binary):
     c_b =  T.sum(T.xlogx.xlogy0(y0, binary) +
                  T.xlogx.xlogy0(1 - y0, 1 - binary), axis=1)
 
-    inner1 =  ((0.5*T.log(1-corr**2)) + logsig_1 + logsig_2 + T.log(2 * np.pi))
+    inner1 =  ((0.5*T.log(1-corr**2)) + T.log(sig_1) + T.log(sig_2) + T.log(2 * np.pi))
 
     z = (((y1 - mu_1) / sig_1)**2 + ((y2 - mu_2) / sig_2)**2 -
          (2. * (corr * (y1 - mu_1) * (y2 - mu_2)) / (sig_1 * sig_2)))
@@ -450,13 +453,13 @@ def latent_lstm_layer(
         if d_ is not None:
             encoder_hidden = lrelu(tensor.dot(concatenate([sbefore, d_], axis=1), inf_w) + inf_b)
             encoder_mus = tensor.dot(encoder_hidden, inf_mus_w) + inf_mus_b
-            encoder_mu, encoder_sigma = encoder_mus[:, :z_dim], encoder_mus[:, z_dim:]
-            tild_z_t = encoder_mu + g_s * tensor.exp(0.5 * encoder_sigma)
-            kld = gaussian_kld(encoder_mu, encoder_sigma, z_mu, z_sigma)
+            encoder_mu, encoder_logvar = encoder_mus[:, :z_dim], encoder_mus[:, z_dim:]
+            tild_z_t = encoder_mu + g_s * tensor.exp(0.5 * encoder_logvar)
+            kld = gaussian_kld(encoder_mu, encoder_logvar, z_mu, z_sigma)
             kld = tensor.sum(kld, axis=-1)
             decoder_mus = tensor.dot(tild_z_t, gen_mus_w) + gen_mus_b
             decoder_mu, decoder_sigma = decoder_mus[:, :d_.shape[1]], decoder_mus[:, d_.shape[1]:]
-            decoder_sigma = tensor.clip(decoder_sigma, -8., 8.)
+            decoder_sigma = tensor.clip(decoder_sigma, -8., 8.)  # Unused since we do L2 cost.
             decoder_mu = tensor.tanh(decoder_mu)
             disc_d_ = theano.gradient.disconnected_grad(d_)
             recon_cost = (disc_d_ - decoder_mu) ** 2.0
@@ -525,7 +528,7 @@ def init_params(options):
                                 nout=options['dim'], ortho=False)
     params = get_layer('ff')[0](options, params, prefix='ff_out',
                                 nin=options['dim'],
-                                nout=2 + 2 + 1 + 1, # 2 mus, 2 logvar, 1 corr and 1 binary
+                                nout=2 + 2 + 1 + 1, # 2 mus, 2 sigma, 1 corr and 1 binary
                                 ortho=False)
     U = numpy.concatenate([norm_weight(options['dim_z'], options['dim']),
                            norm_weight(options['dim_z'], options['dim']),
@@ -549,7 +552,7 @@ def init_params(options):
                                 nout=options['dim'], ortho=False)
     params = get_layer('ff')[0](options, params, prefix='ff_out_r',
                                 nin=options['dim'],
-                                nout=2 + 2 + 1 + 1, # 2 mus, 2 logvar, 1 corr and 1 binary
+                                nout=2 + 2 + 1 + 1, # 2 mus, 2 sigma, 1 corr and 1 binary
                                 ortho=False)
     #Prior Network params
     params = get_layer('ff')[0](options, params, prefix='trans_1', nin=options['dim'], nout=options['prior_hidden'], ortho=False)
@@ -587,7 +590,7 @@ def build_rev_model(tparams, options, x, y, x_mask):
     def _slice(arr, idx):
         if idx == 'mu':
           return arr[:, :, :2]
-        elif idx == 'logvar':
+        elif idx == 'sigma':
           return arr[:, :, 2:4]
         elif idx == 'corr':
           return arr[:, :, [-2]]
@@ -596,15 +599,15 @@ def build_rev_model(tparams, options, x, y, x_mask):
 
     # Get parameters for the output distribution.
     out_r = get_layer('ff')[1](tparams, out, options, prefix='ff_out_r', activ='linear')
-    out_mu = T.clip(_slice(out_r, 'mu'), -10., 10.)
-    out_logvar = T.clip(_slice(out_r, 'logvar'), -10., 10.)
+    out_mu = _slice(out_r, 'mu')
+    out_sigma = T.nnet.softplus(_slice(out_r, 'sigma')) + 1e-4  # Like in VRNN
     corr = T.tanh(_slice(out_r, 'corr'))
     binary = T.nnet.sigmoid(_slice(out_r, 'binary'))
 
     # shift parameters of the output distribution [o4, o3, o2]
     # targets are [x3, x2, x1]
     out_mu = out_mu[:-1]
-    out_logvar = out_logvar[:-1]
+    out_sigma = out_sigma[:-1]
     corr = corr[:-1]
     binary = binary[:-1]
 
@@ -621,12 +624,12 @@ def build_rev_model(tparams, options, x, y, x_mask):
     # Copy what they do in VRNN
     x_shape = x.shape
     out_mu = out_mu.reshape((x_shape[0]*x_shape[1], -1))
-    out_logvar = out_logvar.reshape((x_shape[0]*x_shape[1], -1))
+    out_sigma = out_sigma.reshape((x_shape[0]*x_shape[1], -1))
     corr = corr.reshape((x_shape[0]*x_shape[1], -1))
     binary = binary.reshape((x_shape[0]*x_shape[1], -1))
 
     # ...
-    nll_rev = nll_BiGauss(targets, out_mu, out_logvar, corr, binary)
+    nll_rev = nll_BiGauss(targets, out_mu, out_sigma, corr, binary)
     nll_rev = nll_rev.reshape((x_shape[0], x_shape[1]))
     nll_rev = (nll_rev * targets_mask).sum(0)
     return nll_rev, states_rev, updates_rev
@@ -651,7 +654,7 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     def _slice(arr, idx):
         if idx == 'mu':
           return arr[:, :, :2]
-        elif idx == 'logvar':
+        elif idx == 'sigma':
           return arr[:, :, 2:4]
         elif idx == 'corr':
           return arr[:, :, [-2]]
@@ -660,20 +663,20 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
 
     # Get parameters for the output distribution.
     ff_out = get_layer('ff')[1](tparams, out, options, prefix='ff_out', activ='linear')
-    out_mu = T.clip(_slice(ff_out, 'mu'), -10., 10.)
-    out_logvar = T.clip(_slice(ff_out, 'logvar'), -10., 10.)
+    out_mu = _slice(ff_out, 'mu')
+    out_sigma = T.nnet.softplus(_slice(ff_out, 'sigma')) + 1e-4  # Like in VRNN
     corr = T.tanh(_slice(ff_out, 'corr'))
     binary = T.nnet.sigmoid(_slice(ff_out, 'binary'))
 
     # Copy what they do in VRNN
     x_shape = x.shape
     out_mu = out_mu.reshape((x_shape[0]*x_shape[1], -1))
-    out_logvar = out_logvar.reshape((x_shape[0]*x_shape[1], -1))
+    out_sigma = out_sigma.reshape((x_shape[0]*x_shape[1], -1))
     corr = corr.reshape((x_shape[0]*x_shape[1], -1))
     binary = binary.reshape((x_shape[0]*x_shape[1], -1))
 
     # Compute gaussian log prob of target
-    nll_gen = nll_BiGauss(y, out_mu, out_logvar, corr, binary)
+    nll_gen = nll_BiGauss(y, out_mu, out_sigma, corr, binary)
     nll_gen = nll_gen.reshape((x_shape[0], x_shape[1]))
     nll_gen = (nll_gen * x_mask).sum(0)
     kld = (kld * x_mask).sum(0)
@@ -769,7 +772,7 @@ def build_sampler(tparams, options, trng):
     def _slice(arr, idx):
         if idx == 'mu':
           return arr[:, :2]
-        elif idx == 'logvar':
+        elif idx == 'sigma':
           return arr[:, 2:4]
         elif idx == 'corr':
           return arr[:, -2]
@@ -778,8 +781,8 @@ def build_sampler(tparams, options, trng):
 
     # Get parameters for the output distribution.
     ff_out = get_layer('ff')[1](tparams, out, options, prefix='ff_out', activ='linear')
-    mus = T.clip(_slice(ff_out, 'mu'), -8., 8.)
-    logvars = T.clip(_slice(ff_out, 'logvar'), -8., 8.)
+    mus = _slice(ff_out, 'mu')
+    sigmas = T.nnet.softplus(_slice(ff_out, 'sigma')) + 1e-4  # Like in VRNN
     corr = T.tanh(_slice(ff_out, 'corr'))
     binary = T.nnet.sigmoid(_slice(ff_out, 'binary'))
 
@@ -788,7 +791,6 @@ def build_sampler(tparams, options, trng):
     z1, z2 = zs[:, 0], zs[:, 1]
 
     mu1, mu2 = mus[:, 0], mus[:, 1]
-    sigmas = T.exp(0.5 * logvars)
     s1, s2 = sigmas[:, 0], sigmas[:, 1]
 
     x = mu1 + s1 * z1
@@ -800,7 +802,7 @@ def build_sampler(tparams, options, trng):
     next_samples = T.stack([o, x, y], axis=1)
 
     # Evaluate the NLL of the samples
-    next_ln_p = nll_BiGauss(next_samples[None, :, :], mus, logvars, corr, binary)
+    next_ln_p = nll_BiGauss(next_samples[None, :, :], mus, sigmas, corr, binary)
 
     # next word probability
     print('Building f_next..',)
