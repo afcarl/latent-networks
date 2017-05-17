@@ -25,7 +25,7 @@ from collections import OrderedDict
 
 profile = False
 seed = 1234
-num_iwae_samps = 10
+num_iwae_samps = 25
 num_iwae_iters = 1
 numpy.random.seed(seed)
 is_train = tensor.scalar('is_train')
@@ -532,6 +532,8 @@ def latent_lstm_layer(
             tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_sigma)
             kld = tensor.sum(tild_z_t, axis=-1) * 0.
             recon_cost = tensor.sum(tild_z_t, axis=-1) * 0.
+            log_pz = kld * 0.
+            log_qzIx = kld * 0.
 
         # recurrent dropout
         if hdrop is not None:
@@ -582,6 +584,7 @@ def latent_lstm_layer(
             _step, sequences=[mask, lstm_state_below, back_states, gaussian_s],
             outputs_info = [init_state, init_memory, None, None, None, None, None],
             name=_p(prefix, '_layers'), non_sequences=non_seqs, strict=True, n_steps=nsteps)
+
     return [rval, updates]
 
 
@@ -649,7 +652,6 @@ def build_rev_model(tparams, options, x, y, x_mask):
     out_probs = masked_softmax(out_logits, axis=-1)
     nll_rev = categorical_crossentropy(targets, out_probs)
     # states_rev = [s4, s3, s2, s1]
-    # cut first state out (info about x4 is in s3)
     # posterior sees (s2, s3, s4) in order to predict x2, x3, x4
     states_rev = states_rev[:-1][::-1]
     # ...
@@ -709,24 +711,23 @@ def build_sampler(tparams, options, trng):
 
     # apply one step of gru layer
     rvals, update_gen = get_layer('latent_lstm')[1](tparams, x_emb, options,
-                                            prefix='encoder',
-                                            mask=None,
-                                            one_step=True,
-                                            gaussian_s = gaussian_sampled,
-                                            back_states = None,
-                                            init_state=init_state,
-                                            init_memory=init_memory)
+                                                    prefix='encoder',
+                                                    mask=None,
+                                                    one_step=True,
+                                                    gaussian_s=gaussian_sampled,
+                                                    back_states=None,
+                                                    init_state=init_state,
+                                                    init_memory=init_memory)
     next_state, next_memory, z = rvals
 
     # Compute parameters of the output distribution
     logits = get_layer('ff')[1](tparams, next_state, options, prefix='ff_out_mus', activ='linear')
     next_probs = masked_softmax(logits, axis=-1)
-    next_samples = trng.multinomial(pvals=next_probs).argmax(1)
 
     # next word probability
     print('Building f_next..')
     inps = [last_word, init_state, init_memory, gaussian_sampled]
-    outs = [next_probs, next_samples, next_state, next_memory]
+    outs = [next_probs, next_state, next_memory]
     f_next = theano.function(inps, outs, name='f_next')
     print('Done')
 
@@ -734,7 +735,8 @@ def build_sampler(tparams, options, trng):
 
 
 # generate sample
-def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kickstart=None, zmuv=None):
+def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kickstart=None, zmuv=None,
+               unk_id=None, eos_id=None):
     samples = []
     samples_scores = 0
     nb_samples = 1
@@ -754,22 +756,37 @@ def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kic
     next_state = numpy.zeros((nb_samples, options['dim'])).astype('float32')
     next_memory = numpy.zeros((nb_samples, options['dim'])).astype('float32')
 
-    if zmuv is None:
-        zmuv = numpy.random.normal(loc=0.0, scale=1.0,
-                                   size=(next_w.shape[0], options['dim_z'])).astype('float32')
-
     for ii in range(maxlen):
-        inps = [next_w, next_state, next_memory, zmuv]
-        ret = f_next(*inps)
-        next_p, next_w, next_state, next_memory = ret
+        if zmuv is None:
+            zmuv_t = numpy.random.normal(
+                loc=0.0, scale=1.0,
+                size=(next_w.shape[0], options['dim_z'])).astype('float32')
+        else:
+            zmuv_t = zmuv[:, ii, :]
 
-        nw = next_w
+        inps = [next_w, next_state, next_memory, zmuv_t]
+        ret = f_next(*inps)
+        next_p, next_state, next_memory = ret
+
+        if unk_id is not None:
+            next_p[:, unk_id] = 0.
+        if (eos_id is not None) and ii < 5:
+            next_p[:, eos_id] = 0.
+        next_p = next_p / numpy.sum(next_p, axis=1)[:, None]
+
         if argmax:
             nw = next_p.argmax(axis=1)
+        else:
+            nw = []
+            for i in range(next_p.shape[0]):
+                nw_i = numpy.random.choice(range(next_p.shape[1]), 1, p=next_p[i, :])
+                nw.append(nw_i[0])
+            nw = numpy.asarray(nw)
 
         if kickstart is not None and ii < len(kickstart):
             nw = kickstart[ii]
 
+        next_w = nw
         samples.append(nw)
         samples_scores += np.log(next_p[np.arange(next_w.shape[0]), nw])
 
@@ -857,6 +874,7 @@ def train(dim_input=200,  # input vector dimensionality
           use_dropout=False,
           reload_=False,
           kl_start=0.2,
+          shift_pred=0,
           weight_aux=0.,
           kl_rate=0.0003):
 
@@ -866,11 +884,11 @@ def train(dim_input=200,  # input vector dimensionality
     learn_h0 = False
 
     desc = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
-        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_log.txt'
+        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_log_' + str(shift_pred) + '.txt'
     opts = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
-        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_opts.pkl'
+        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_opts_' + str(shift_pred) + '.pkl'
     pars = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
-        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_pars.npz'
+        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_pars_' + str(shift_pred) + '.npz'
 
     print(desc)
 
@@ -930,16 +948,11 @@ def train(dim_input=200,  # input vector dimensionality
         givens={is_train: numpy.float32(0.)})
     print('Done')
 
-    print('Testing valid error')
-    valid_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='valid')
-    print valid_err
-    print('DONE')
-
     print('Computing gradient...')
     grads = tensor.grad(tot_cost, itemlist(tparams))
     print('Done')
 
-    all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 5.)
+    all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 100.)
     # update function
     all_gshared = [theano.shared(p.get_value() * 0., name='%s_grad' % k)
                    for k, p in tparams.iteritems()]
@@ -968,6 +981,7 @@ def train(dim_input=200,  # input vector dimensionality
     kl_rate = model_options['kl_rate']
     old_valid_err = 99999
 
+    # epochs loop
     for eidx in range(max_epochs):
         print("Epoch: {}".format(eidx))
         n_samples = 0
@@ -986,7 +1000,8 @@ def train(dim_input=200,  # input vector dimensionality
 
             ud_start = time.time()
             # compute cost, grads and copy grads to shared variables
-            zmuv = numpy.random.normal(loc=0.0, scale=1.0, size=(x.shape[0], x.shape[1], model_options['dim_z'])).astype('float32')
+            zmuv = numpy.random.normal(loc=0.0, scale=1.0, size=(
+                x.shape[0], x.shape[1], model_options['dim_z'])).astype('float32')
             vae_cost_np, aux_cost_np, tot_cost_np, kld_cost_np, \
                 elbo_cost_np, nll_rev_cost_np, nll_gen_cost_np, not_finite_np = \
                 f_prop(x, y, x_mask, zmuv, np.float32(kl_start))
@@ -1015,6 +1030,7 @@ def train(dim_input=200,  # input vector dimensionality
                 log_file.write(str1 + '\n')
                 log_file.flush()
 
+
         print('Starting validation...')
         valid_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='valid')
         test_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='test')
@@ -1025,8 +1041,9 @@ def train(dim_input=200,  # input vector dimensionality
         print(str1)
         log_file.write(str1 + '\n')
 
-        if (old_valid_err < valid_err) and lrate > 0.0001:
-            lrate = lrate / 2.0
+        if (old_valid_err < history_errs[-1]):
+            if lrate > 0.0001:
+                lrate = lrate / 2.0
         else:
             save_params(pars, tparams)
 

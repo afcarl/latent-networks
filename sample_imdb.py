@@ -9,8 +9,6 @@ import numpy as np
 import cPickle as pkl
 from ipdb import set_trace as dbg
 
-import matplotlib.pyplot as plt
-
 import theano
 import theano.tensor as T
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
@@ -20,6 +18,7 @@ def build_parser():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("model", help="Model params (.npz)")
+    parser.add_argument("options", help="Model params (.npz)")
 
     parser.add_argument("--seqlen", type=int, default=50,
                         help="Sequence length. Default: %(default)s")
@@ -45,7 +44,7 @@ def main():
     np.random.seed(args.seed)
     rng = np.random.RandomState(args.seed+1)
     model_file = args.model
-    opts = model_file[:-len("_pars.npz")] + "_opts.pkl"
+    opts = args.options
     model_options = pkl.load(open(opts, 'rb'))
 
     # Load data
@@ -139,20 +138,21 @@ def main():
     from lm_lstm_imdb import build_sampler, gen_sample
     f_next = build_sampler(tparams, model_options, trng)
 
+    unk_id = data.unk_id
+    eos_id = data.eos_id
     while True:
-        zmuv = rng.normal(loc=0.0, scale=1.0,
-                          size=(1, model_options['dim_z'])).astype('float32')
-        zmuv = np.tile(zmuv, reps=(args.nb_samples, 1))
-
         print("Samples (fixed latent)")
-        sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=args.seqlen, argmax=False, zmuv=zmuv)
+        zmuv = rng.normal(loc=0.0, scale=1.0, size=(1, args.seqlen, model_options['dim_z'])).astype('float32')
+        zmuv = np.tile(zmuv, reps=(args.nb_samples, 1, 1))
+        sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=args.seqlen, argmax=False, zmuv=zmuv,
+                                          unk_id=unk_id, eos_id=eos_id)
         #print("LL: {}".format(sample_score))
         data.print_batch(sample.T, eos_id=data.eos_id)
 
         print("Argmax (sample latent)")
-        zmuv = rng.normal(loc=0.0, scale=1.0,
-                          size=(args.nb_samples, model_options['dim_z'])).astype('float32')
-        sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=args.seqlen, argmax=True, zmuv=zmuv)
+        zmuv = rng.normal(loc=0.0, scale=1.0, size=(args.nb_samples, args.seqlen, model_options['dim_z'])).astype('float32')
+        sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=args.seqlen, argmax=True,
+                                          zmuv=zmuv, unk_id=unk_id, eos_id=eos_id)
         #print("LL: {}".format(sample_score))
         data.print_batch(sample.T, eos_id=data.eos_id)
 
