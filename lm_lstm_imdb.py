@@ -445,9 +445,10 @@ def lstm_layer(tparams, state_below,
 
 def latent_lstm_layer(
         tparams, state_below,
-        options, prefix='lstm', back_states = None,
+        options, prefix='lstm', back_states=None,
         gaussian_s=None, mask=None, one_step=False,
         init_state=None, init_memory=None, nsteps=None,
+        provide_z=False,
         **kwargs):
 
     if nsteps is None:
@@ -529,7 +530,12 @@ def latent_lstm_layer(
             recon_cost = tensor.sqr(decoder_mu - disc_d_)
             recon_cost = tensor.sum(recon_cost, axis=-1)
         else:
-            tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_sigma)
+            if provide_z:
+                print("Zs were provided!")
+                tild_z_t = g_s
+            else:
+                tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_sigma)
+
             kld = tensor.sum(tild_z_t, axis=-1) * 0.
             recon_cost = tensor.sum(tild_z_t, axis=-1) * 0.
             log_pz = kld * 0.
@@ -682,7 +688,7 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     log_qzIx = (log_qzIx * x_mask).sum(0)
     kld = (kld * x_mask).sum(0)
     rec_cost_rev = (rec_cost_rev * x_mask).sum(0)
-    return nll_gen, states_gen, kld, rec_cost_rev, updates_gen, log_pxIz, log_pz, log_qzIx
+    return nll_gen, states_gen, kld, rec_cost_rev, updates_gen, log_pxIz, log_pz, log_qzIx, z
 
 
 def ELBOcost(rec_cost, kld, kld_weight=1.):
@@ -692,7 +698,7 @@ def ELBOcost(rec_cost, kld, kld_weight=1.):
 
 
 # build a sampler
-def build_sampler(tparams, options, trng):
+def build_sampler(tparams, options, trng, provide_z=False):
     last_word = T.lvector('last_word')
     init_state = tensor.matrix('init_state', dtype='float32')
     init_memory = tensor.matrix('init_memory', dtype='float32')
@@ -717,7 +723,8 @@ def build_sampler(tparams, options, trng):
                                                     gaussian_s=gaussian_sampled,
                                                     back_states=None,
                                                     init_state=init_state,
-                                                    init_memory=init_memory)
+                                                    init_memory=init_memory,
+                                                    provide_z=provide_z)
     next_state, next_memory, z = rvals
 
     # Compute parameters of the output distribution
@@ -919,7 +926,7 @@ def train(dim_input=200,  # input vector dimensionality
     nll_rev, states_rev, updates_rev = \
         build_rev_model(tparams, model_options, x, y, x_mask)
     nll_gen, states_gen, kld, rec_cost_rev, updates_gen, \
-        log_pxIz, log_pz, log_qzIx = \
+        log_pxIz, log_pz, log_qzIx, z = \
         build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
     vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f).mean()

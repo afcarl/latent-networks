@@ -566,7 +566,7 @@ class IMDB_JMARS():
         return sentences
 
 
-    def print_batch(self, batch, eos_id=None):
+    def print_batch(self, batch, eos_id=None, print_number=True):
         for i, s in enumerate(batch):
             sentence = []
             for idx in s:
@@ -574,7 +574,10 @@ class IMDB_JMARS():
                 if eos_id == idx:
                     break
 
-            print("{}. ".format(i) + " ".join(sentence))
+            if print_number:
+                print("{}. ".format(i) + " ".join(sentence))
+            else:
+                print(" ".join(sentence))
 
     def get_train_batch(self, shuffle=True):
         if shuffle:

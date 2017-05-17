@@ -31,6 +31,7 @@ def build_parser():
                         help="Show real data from validset instead sampling.")
 
     parser.add_argument("--eval", action="store_true", help="Run evaluation.")
+    parser.add_argument("--interpolation", action="store_true", help="Perform latent interpolation.")
     parser.add_argument("--kickstart", action="store_true", help="Kickstart sequences with real data.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose mode.")
 
@@ -117,7 +118,7 @@ def main():
         nll_rev, states_rev, updates_rev = \
             build_rev_model(tparams, model_options, x, y, x_mask)
         nll_gen, states_gen, kld, rec_cost_rev, updates_gen, \
-            log_pxIz, log_pz, log_qzIx = \
+            log_pxIz, log_pz, log_qzIx, z = \
             build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
         print('Building f_log_probs...')
@@ -139,6 +140,82 @@ def main():
         test_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='test')
         print("Test: {}".format(test_err))
 
+    if args.interpolation:
+        trng = RandomStreams(args.seed)
+        from lm_lstm_imdb import is_train, build_rev_model, build_gen_model, build_sampler, gen_sample
+
+        x = T.lmatrix('x')
+        y = T.lmatrix('y')
+        x_mask = T.matrix('x_mask')
+        # Debug test_value
+        x.tag.test_value = np.random.rand(11, 20).astype("int64")
+        y.tag.test_value = np.random.rand(11, 20).astype("int64")
+        x_mask.tag.test_value = np.ones((11, 20)).astype("float32")
+        is_train.tag.test_value = np.float32(0.)
+        zmuv = T.tensor3('zmuv')
+        zmuv.tag.test_value = np.ones((11, 20, model_options['dim_z'])).astype("float32")
+
+        # build the symbolic computational graph
+        nll_rev, states_rev, updates_rev = \
+            build_rev_model(tparams, model_options, x, y, x_mask)
+        nll_gen, states_gen, kld, rec_cost_rev, updates_gen, \
+            log_pxIz, log_pz, log_qzIx, z = \
+            build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
+
+        # Build inference
+        get_latents = theano.function([x, y, x_mask, zmuv], z,
+                                      updates=(updates_gen + updates_rev),
+                                      givens={is_train: np.float32(0.)})
+
+        indices = np.arange(len(data.va_words))
+        while True:
+            rng.shuffle(indices)
+            s1_id, s2_id = indices[0], indices[1]
+
+            batch = data.prepare_batch([data.va_words[s1_id], data.va_words[s2_id]])
+            data.print_batch(batch[0])
+
+            seqlen = batch[0].shape[1]
+            zmuv = rng.normal(loc=0.0, scale=1.0, size=(seqlen, 2, model_options['dim_z'])).astype('float32')
+            batch_z = get_latents(batch[0].T, batch[1].T, batch[2].T, zmuv)
+            z1 = batch_z[:, [0], :]
+            z2 = batch_z[:, [1], :]
+
+            # Build sampler
+            f_next = build_sampler(tparams, model_options, trng, provide_z=True)
+
+            # Interpolation
+            print("Samples")
+            data.print_batch(batch[0][[0]], eos_id=data.eos_id, print_number=False)
+            for i in np.linspace(0, 1, 11):
+                print("i: {}".format(i), end="")
+                z = (i * z1) + ((1 - i) * z2)  # Interpolate latent
+                sample, sample_score = gen_sample(tparams, f_next, model_options,
+                                                  maxlen=seqlen, argmax=False, zmuv=z.transpose(1, 0, 2),
+                                                  unk_id=data.unk_id, eos_id=data.eos_id)
+                #print("LL: {}".format(sample_score))
+                data.print_batch(sample.T, eos_id=data.eos_id, print_number=False)
+
+            data.print_batch(batch[0][[1]], eos_id=data.eos_id, print_number=False)
+
+            print("Argmax")
+            data.print_batch(batch[0][[0]], eos_id=data.eos_id, print_number=False)
+            for i in np.linspace(0, 1, 11):
+                print("i: {}".format(i), end="")
+                z = (i * z1) + ((1 - i) * z2)  # Interpolate latent
+                sample, sample_score = gen_sample(tparams, f_next, model_options,
+                                                  maxlen=seqlen, argmax=True, zmuv=z.transpose(1, 0, 2),
+                                                  unk_id=data.unk_id, eos_id=data.eos_id)
+                #print("LL: {}".format(sample_score))
+                data.print_batch(sample.T, eos_id=data.eos_id, print_number=False)
+
+            data.print_batch(batch[0][[1]], eos_id=data.eos_id, print_number=False)
+
+            raw_input("-- Next --")
+
+        sys.exit(0)
+
+    # default sample whole sentences.
     trng = RandomStreams(args.seed)
     from lm_lstm_imdb import build_sampler, gen_sample
     f_next = build_sampler(tparams, model_options, trng)
