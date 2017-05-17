@@ -600,7 +600,7 @@ def build_rev_model(tparams, options, x, y, x_mask):
     # Get parameters for the output distribution.
     out_r = get_layer('ff')[1](tparams, out, options, prefix='ff_out_r', activ='linear')
     out_mu = _slice(out_r, 'mu')
-    out_sigma = T.nnet.softplus(_slice(out_r, 'sigma')) + 1e-4  # Like in VRNN
+    out_sigma = T.nnet.softplus(tensor.clip(_slice(out_r, 'sigma'), -5, 5)) + 1e-4  # Like in VRNN
     corr = T.tanh(_slice(out_r, 'corr'))
     binary = T.nnet.sigmoid(_slice(out_r, 'binary'))
 
@@ -664,7 +664,7 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     # Get parameters for the output distribution.
     ff_out = get_layer('ff')[1](tparams, out, options, prefix='ff_out', activ='linear')
     out_mu = _slice(ff_out, 'mu')
-    out_sigma = T.nnet.softplus(_slice(ff_out, 'sigma')) + 1e-4  # Like in VRNN
+    out_sigma = T.nnet.softplus(tensor.clip(_slice(ff_out, 'sigma'), -5, 5)) + 1e-4  # Like in VRNN
     corr = T.tanh(_slice(ff_out, 'corr'))
     binary = T.nnet.sigmoid(_slice(ff_out, 'binary'))
 
