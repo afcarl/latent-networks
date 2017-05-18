@@ -1029,6 +1029,7 @@ def train(dim_input=3,  # input vector dimensionality
         print('Starting validation...')
         valid_err = pred_probs(f_log_probs, model_options, iamondb_valid, batch_size, source='valid')
         history_errs.append(valid_err)
+        str1 = 'Valid ELBO: {:.2f}'.format(valid_err)
 
         old_valid_err = history_errs[-1]
         print(str1)
