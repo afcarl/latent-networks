@@ -136,7 +136,7 @@ def main():
                                               init_states=states, init_memories=memories)
             print("NLL: {}".format(sample_score))
 
-            sample = np.concatenate([y, sample[0]], axis=0)
+            sample = np.concatenate([y[:, 0, :], sample[0]], axis=0)
             plot_lines_iamondb_example(sample, offsets_provided=True,
                                        mean=X_mean, std=X_std, colored=True,
                                        show=True)
