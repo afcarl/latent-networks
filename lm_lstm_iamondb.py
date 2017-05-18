@@ -646,7 +646,7 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
         prefix='encoder', mask=x_mask, gaussian_s=zmuv,
         back_states=states_rev)
 
-    states_gen, z, kld, rec_cost_rev = rvals[0], rvals[2], rvals[3], rvals[4]
+    states_gen, memories_gen, z, kld, rec_cost_rev = rvals[0], rvals[1], rvals[2], rvals[3], rvals[4]
     # Compute parameters of the output distribution
     out_lstm = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_lstm', activ='linear')
     out_prev = get_layer('ff')[1](tparams, x_emb, options, prefix='ff_out_prev', activ='linear')
@@ -682,7 +682,7 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     nll_gen = (nll_gen * x_mask).sum(0)
     kld = (kld * x_mask).sum(0)
     rec_cost_rev = (rec_cost_rev * x_mask).sum(0)
-    return nll_gen, states_gen, kld, rec_cost_rev, updates_gen
+    return nll_gen, states_gen, kld, rec_cost_rev, updates_gen, memories_gen
 
 
 def ELBOcost(rec_cost, kld, kld_weight=1.):
@@ -783,9 +783,9 @@ def build_sampler(tparams, options, trng):
     # Get parameters for the output distribution.
     ff_out = get_layer('ff')[1](tparams, out, options, prefix='ff_out', activ='linear')
     mus = _slice(ff_out, 'mu')
-    sigmas = T.nnet.softplus(_slice(ff_out, 'sigma')) + 1e-4  # Like in VRNN
+    sigmas = T.nnet.softplus(tensor.clip(_slice(ff_out, 'sigma'), -5, 5)) + 1e-4  # Like in VRNN
     corr = T.tanh(_slice(ff_out, 'corr'))
-    binary = T.nnet.sigmoid(_slice(ff_out, 'binary'))
+    binary = T.nnet.sigmoid(T.clip(_slice(ff_out, 'binary'), -5, 5))
 
     # Sample from a mixture of two bivariate gaussians.
     zs = trng.normal(size=mus.shape)
@@ -816,7 +816,7 @@ def build_sampler(tparams, options, trng):
 
 
 # generate sample
-def gen_sample(tparams, f_next, options, maxlen=30, argmax=False, kickstart=None):
+def gen_sample(tparams, f_next, options, maxlen=30, argmax=False, init_states=None, init_memories=None):
 
     sample = []
     sample_score = 0
@@ -825,9 +825,11 @@ def gen_sample(tparams, f_next, options, maxlen=30, argmax=False, kickstart=None
     next_s = -1 * numpy.ones((1, 3)).astype('float32')
     next_state = numpy.zeros((1, options['dim'])).astype('float32')
     next_memory = numpy.zeros((1, options['dim'])).astype('float32')
+    if init_states is not None:
+        next_state = init_states
 
-    if kickstart is not None:
-        maxlen = maxlen + len(kickstart)
+    if init_memories is not None:
+        next_memory = init_memories
 
     for ii in range(maxlen):
         zmuv = numpy.random.normal(loc=0.0, scale=1.0,
@@ -836,9 +838,6 @@ def gen_sample(tparams, f_next, options, maxlen=30, argmax=False, kickstart=None
         inps = [next_s, next_state, next_memory, zmuv]
         ret = f_next(*inps)
         next_ln_p, next_s, next_state, next_memory = ret
-
-        if kickstart is not None and ii < len(kickstart):
-            next_s = kickstart[ii]
 
         sample.append(next_s)
         sample_score += next_ln_p
@@ -928,7 +927,7 @@ def train(dim_input=3,  # input vector dimensionality
     # build the symbolic computational graph
     nll_rev, states_rev, updates_rev = \
         build_rev_model(tparams, model_options, x, y, x_mask)
-    nll_gen, states_gen, kld, rec_cost_rev, updates_gen = \
+    nll_gen, states_gen, kld, rec_cost_rev, updates_gen, _ = \
         build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
     vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f).mean()

@@ -96,16 +96,39 @@ def main():
 
 
         trng = RandomStreams(args.seed)
-        from lm_lstm_iamondb import build_sampler, gen_sample
+        from lm_lstm_iamondb import build_sampler, gen_sample, build_rev_model, build_gen_model
         from iamondb_utils import plot_lines_iamondb_example
         f_next = build_sampler(tparams, model_options, trng)
+
+        x = T.lmatrix('x')
+        y = T.lmatrix('y')
+        x_mask = T.matrix('x_mask')
+        # Debug test_value
+        x.tag.test_value = np.random.rand(11, 20).astype("int64")
+        y.tag.test_value = np.random.rand(11, 20).astype("int64")
+        x_mask.tag.test_value = np.ones((11, 20)).astype("float32")
+        zmuv = T.tensor3('zmuv')
+        zmuv.tag.test_value = np.ones((11, 20, model_options['dim_z'])).astype("float32")
+
+        # build the symbolic computational graph
+        nll_rev, states_rev, updates_rev = \
+            build_rev_model(tparams, model_options, x, y, x_mask)
+        nll_gen, states_gen, kld, rec_cost_rev, updates_gen, \
+            log_pxIz, log_pz, log_qzIx, z, memories_gen = \
+            build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
+
+        # Build inference
+        get_states = theano.function([x, y, x_mask, zmuv], [states_gen[-1], memories_gen[-1]],
+                                      updates=(updates_gen + updates_rev))
 
         dset_size = len(iamondb_valid.data[0])
         for start in range(0, dset_size, 1):
             end = start + 1
             # x.shape : seq_len, batch_size, input_dim
             x, x_mask = iamondb_valid.slices(start, end)
-            sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=args.seqlen, argmax=False, kickstart=x)
+            states, memories = get_states(x, x_mask)
+            sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=args.seqlen, argmax=False,
+                                              init_states=states, init_memories=memories)
             print("NLL: {}".format(sample_score))
 
             plot_lines_iamondb_example(sample[0], offsets_provided=True,
@@ -130,7 +153,7 @@ def main():
         # build the symbolic computational graph
         nll_rev, states_rev, updates_rev = \
             build_rev_model(tparams, model_options, x, y, x_mask)
-        nll_gen, states_gen, kld, rec_cost_rev, updates_gen = \
+        nll_gen, states_gen, kld, rec_cost_rev, updates_gen, _ = \
             build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
         print('Building f_log_probs...')
