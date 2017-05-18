@@ -130,7 +130,7 @@ def main():
             x = np.concatenate([np.zeros_like(x[[0]]), x[:-1]], axis=0)
 
             seqlen = len(x)
-            zmuv = rng.normal(loc=0.0, scale=1.0, size=(seqlen, 2, model_options['dim_z'])).astype('float32')
+            zmuv = rng.normal(loc=0.0, scale=1.0, size=(seqlen, 1, model_options['dim_z'])).astype('float32')
             states, memories = get_states(x, y, x_mask, zmuv)
             sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=args.seqlen, argmax=False,
                                               init_states=states, init_memories=memories)
