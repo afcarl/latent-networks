@@ -44,6 +44,7 @@ def main():
     args = parser.parse_args()
 
     np.random.seed(args.seed)
+    rng = np.random.RandomState(args.seed+1)
     model_file = args.model
     opts = args.opts
     model_options = pkl.load(open(opts, 'rb'))
@@ -100,12 +101,12 @@ def main():
         from iamondb_utils import plot_lines_iamondb_example
         f_next = build_sampler(tparams, model_options, trng)
 
-        x = T.lmatrix('x')
-        y = T.lmatrix('y')
+        x = T.tensor3('x')
+        y = T.tensor3('y')
         x_mask = T.matrix('x_mask')
         # Debug test_value
-        x.tag.test_value = np.random.rand(11, 20).astype("int64")
-        y.tag.test_value = np.random.rand(11, 20).astype("int64")
+        x.tag.test_value = np.random.rand(11, 20, 3).astype("int64")
+        y.tag.test_value = np.random.rand(11, 20, 3).astype("int64")
         x_mask.tag.test_value = np.ones((11, 20)).astype("float32")
         zmuv = T.tensor3('zmuv')
         zmuv.tag.test_value = np.ones((11, 20, model_options['dim_z'])).astype("float32")
@@ -113,8 +114,7 @@ def main():
         # build the symbolic computational graph
         nll_rev, states_rev, updates_rev = \
             build_rev_model(tparams, model_options, x, y, x_mask)
-        nll_gen, states_gen, kld, rec_cost_rev, updates_gen, \
-            log_pxIz, log_pz, log_qzIx, z, memories_gen = \
+        nll_gen, states_gen, kld, rec_cost_rev, updates_gen, memories_gen = \
             build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
         # Build inference
@@ -126,12 +126,18 @@ def main():
             end = start + 1
             # x.shape : seq_len, batch_size, input_dim
             x, x_mask = iamondb_valid.slices(start, end)
-            states, memories = get_states(x, x_mask)
+            y = x
+            x = np.concatenate([np.zeros_like(x[[0]]), x[:-1]], axis=0)
+
+            seqlen = len(x)
+            zmuv = rng.normal(loc=0.0, scale=1.0, size=(seqlen, 2, model_options['dim_z'])).astype('float32')
+            states, memories = get_states(x, y, x_mask, zmuv)
             sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=args.seqlen, argmax=False,
                                               init_states=states, init_memories=memories)
             print("NLL: {}".format(sample_score))
 
-            plot_lines_iamondb_example(sample[0], offsets_provided=True,
+            sample = np.concatenate([y, sample[0]], axis=0)
+            plot_lines_iamondb_example(sample, offsets_provided=True,
                                        mean=X_mean, std=X_std, colored=True,
                                        show=True)
 
