@@ -92,15 +92,15 @@ def nll_BiGauss(y, mu, sigma, corr, binary):
     y2 = y[:, :, 2].reshape((-1, 1))
     corr = corr.reshape((-1, 1))
 
-    c_b =  T.sum(T.xlogx.xlogy0(y0, binary) +
-                 T.xlogx.xlogy0(1 - y0, 1 - binary), axis=1)
+    c_b =  T.sum(T.xlogx.xlogy0(y0, binary+1e-6) +
+                 T.xlogx.xlogy0(1 - y0, 1 - binary+1e-6), axis=1)
 
-    inner1 =  ((0.5*T.log(1-corr**2)) + T.log(sig_1) + T.log(sig_2) + T.log(2 * np.pi))
+    inner1 =  ((0.5*T.log(1-corr**2+1e-6)) + T.log(sig_1+1e-6) + T.log(sig_2+1e-6) + T.log(2 * np.pi+1e-6))
 
     z = (((y1 - mu_1) / sig_1)**2 + ((y2 - mu_2) / sig_2)**2 -
          (2. * (corr * (y1 - mu_1) * (y2 - mu_2)) / (sig_1 * sig_2)))
 
-    inner2 = 0.5 * (1. / (1. - corr**2))
+    inner2 = 0.5 * (1. / (1. - corr**2+1e-6))
     cost = - (inner1 + (inner2 * z))
 
     nll = -T.sum(cost, axis=1) - c_b
@@ -602,7 +602,7 @@ def build_rev_model(tparams, options, x, y, x_mask):
     out_mu = _slice(out_r, 'mu')
     out_sigma = T.nnet.softplus(tensor.clip(_slice(out_r, 'sigma'), -5, 5)) + 1e-4  # Like in VRNN
     corr = T.tanh(_slice(out_r, 'corr'))
-    binary = T.nnet.sigmoid(_slice(out_r, 'binary'))
+    binary = T.nnet.sigmoid(T.clip(_slice(out_r, 'binary'), -5, 5))
 
     # shift parameters of the output distribution [o4, o3, o2]
     # targets are [x3, x2, x1]
@@ -666,7 +666,7 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     out_mu = _slice(ff_out, 'mu')
     out_sigma = T.nnet.softplus(tensor.clip(_slice(ff_out, 'sigma'), -5, 5)) + 1e-4  # Like in VRNN
     corr = T.tanh(_slice(ff_out, 'corr'))
-    binary = T.nnet.sigmoid(_slice(ff_out, 'binary'))
+    binary = T.nnet.sigmoid(T.clip(_slice(ff_out, 'binary'), -5, 5))
 
     # Copy what they do in VRNN
     x_shape = x.shape
