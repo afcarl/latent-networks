@@ -20,6 +20,7 @@ def build_parser():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("model", help="Model params (.npz)")
+    parser.add_argument("opts", help="Model options (.pkl)")
 
     parser.add_argument("--seqlen", type=int, default=500,
                         help="Sequence length. Default: %(default)s")
@@ -44,7 +45,7 @@ def main():
 
     np.random.seed(args.seed)
     model_file = args.model
-    opts = model_file[:-len("_model.npz")] + "_opts.pkl"
+    opts = args.opts
     model_options = pkl.load(open(opts, 'rb'))
 
     # Load data
