@@ -95,25 +95,23 @@ def main():
                                       updates=(updates_gen + updates_rev),
                                       givens={is_train: np.float32(0.)})
 
-        data.batch_size = 1
-        for x, y, x_mask in data.get_valid_batch():
-            x = x.transpose(1, 0).astype('int32')
-            y = y.transpose(1, 0).astype('int32')
-            x_mask = x_mask.transpose(1, 0).astype('float32')
+        while True:
+            prefix = raw_input("prefix: ").strip().split()
+            prefix_id = [data.word2idx.get(x, data.unk_id) for x in prefix]
+            batch = data.prepare_batch([prefix_id])
 
-            print("Ground truth: {}".format(data.batch2text(x.T)[0]))
+            seqlen = batch[0].shape[1]
+            x = batch[0].T
+            y = batch[1].T
+            x_mask = batch[2].T
+            print("Prefix: {}".format(data.batch2text(x.T)[0]))
 
-            # Condition on first half of the sentence
-            half = len(x) // 2
-            x = x[:half]
-            y = y[:half]
-            x_mask = x_mask[:half]
-            print("Half sentence: {}".format(data.batch2text(x.T)[0]))
-
-            zmuv = rng.normal(loc=0.0, scale=1.0, size=(args.seqlen, 1, model_options['dim_z'])).astype('float32')
+            zmuv = rng.normal(loc=0.0, scale=1.0, size=(seqlen, 1, model_options['dim_z'])).astype('float32')
             states, memories = get_states(x, y, x_mask, zmuv)
 
             print("Samples (fixed latent)")
+            zmuv = rng.normal(loc=0.0, scale=1.0, size=(args.seqlen, 1, model_options['dim_z'])).astype('float32')
+            zmuv = np.tile(zmuv, reps=(1, args.nb_samples, 1))
             sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=args.seqlen, argmax=False, zmuv=zmuv,
                                               unk_id=data.unk_id, eos_id=data.eos_id, bos_id=data.bos_id,
                                               init_states=states, init_memories=memories)
