@@ -147,8 +147,10 @@ def main():
                                            show=True)
 
         # Print all of them
-        samples = np.concatenate(samples, axis=0)
-        plot_lines_iamondb_example(samples.transpose(1, 0, 2), offsets_provided=True,
+        samples_masks = iamondb_valid.create_mask(samples)
+        samples = iamondb_valid.zero_pad(samples)
+        plot_lines_iamondb_example(samples, offsets_provided=True,
+                                   mask=samples_masks,
                                    mean=X_mean, std=X_std, colored=True,
                                    show=True)
         sys.exit(0)
