@@ -684,7 +684,7 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
         prefix='encoder', mask=x_mask, gaussian_s=zmuv,
         back_states=states_rev)
 
-    states_gen, z, log_pz, log_qzIx, kld, rec_cost_rev = rvals[0], rvals[2], rvals[3], rvals[4], rvals[5], rvals[6]
+    states_gen, memories_gen, z, log_pz, log_qzIx, kld, rec_cost_rev = rvals[0], rvals[1], rvals[2], rvals[3], rvals[4], rvals[5], rvals[6]
     out_logits = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_mus', activ='linear')
     out_probs = masked_softmax(out_logits, axis=-1)
 
@@ -695,7 +695,7 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     log_qzIx = (log_qzIx * x_mask).sum(0)
     kld = (kld * x_mask).sum(0)
     rec_cost_rev = (rec_cost_rev * x_mask).sum(0)
-    return nll_gen, states_gen, kld, rec_cost_rev, updates_gen, log_pxIz, log_pz, log_qzIx, z
+    return nll_gen, states_gen, kld, rec_cost_rev, updates_gen, log_pxIz, log_pz, log_qzIx, z, memories_gen
 
 
 def ELBOcost(rec_cost, kld, kld_weight=1.):
@@ -750,18 +750,11 @@ def build_sampler(tparams, options, trng, provide_z=False):
 
 # generate sample
 def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kickstart=None, zmuv=None,
-               unk_id=None, eos_id=None, bos_id=None):
+               unk_id=None, eos_id=None, bos_id=None, init_states=None, init_memories=None):
     assert bos_id is not None
     samples = []
     samples_scores = 0
     nb_samples = 1
-
-    if kickstart is not None and zmuv is not None:
-        assert kickstart.shape[1] == zmuv.shape[1]
-
-    if kickstart is not None:
-        maxlen = maxlen + len(kickstart)
-        nb_samples = kickstart.shape[1]
 
     if zmuv is not None:
         nb_samples = zmuv.shape[1]
@@ -770,6 +763,18 @@ def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kic
     next_w = bos_id * numpy.ones((nb_samples,)).astype('int64')
     next_state = numpy.zeros((nb_samples, options['dim'])).astype('float32')
     next_memory = numpy.zeros((nb_samples, options['dim'])).astype('float32')
+
+    if init_states is not None:
+        next_state = init_states
+
+    if init_memories is not None:
+        next_memory = init_memories
+
+    if next_state.shape[0] != nb_samples:
+        next_state = np.tile(next_state, reps=(nb_samples, 1))
+
+    if next_memory.shape[0] != nb_samples:
+        next_memory = np.tile(next_memory, reps=(nb_samples, 1))
 
     for ii in range(maxlen):
         if zmuv is None:
@@ -797,9 +802,6 @@ def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kic
                 nw_i = numpy.random.choice(range(next_p.shape[1]), 1, p=next_p[i, :])
                 nw.append(nw_i[0])
             nw = numpy.asarray(nw)
-
-        if kickstart is not None and ii < len(kickstart):
-            nw = kickstart[ii]
 
         next_w = nw
         samples.append(nw)
@@ -934,7 +936,7 @@ def train(dim_input=200,  # input vector dimensionality
     nll_rev, states_rev, updates_rev = \
         build_rev_model(tparams, model_options, x, y, x_mask)
     nll_gen, states_gen, kld, rec_cost_rev, updates_gen, \
-        log_pxIz, log_pz, log_qzIx, z = \
+        log_pxIz, log_pz, log_qzIx, z, _ = \
         build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
     vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f).mean()
