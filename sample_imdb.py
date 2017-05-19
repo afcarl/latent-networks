@@ -169,10 +169,16 @@ def main():
 
         indices = np.arange(len(data.va_words))
         while True:
-            rng.shuffle(indices)
-            s1_id, s2_id = indices[0], indices[1]
+            #rng.shuffle(indices)
+            #s1_id, s2_id = indices[0], indices[1]
 
-            batch = data.prepare_batch([data.va_words[s1_id], data.va_words[s2_id]])
+            s1 = raw_input("s1:").strip().split()
+            s2 = raw_input("s2:").strip().split()
+
+            s1_id = [data.word2idx.get(x, data.unk_id) for x in s1]
+            s2_id = [data.word2idx.get(x, data.unk_id) for x in s2]
+
+            batch = data.prepare_batch([s1_id, s2_id])
             data.print_batch(batch[0])
 
             seqlen = batch[0].shape[1]
@@ -189,10 +195,10 @@ def main():
             data.print_batch(batch[0][[0]], eos_id=data.eos_id, print_number=False)
             for i in np.linspace(0, 1, 11):
                 print("{}: ".format(i), end="")
-                z = (i * z1) + ((1 - i) * z2)  # Interpolate latent
+                z = ((1 - i) * z1) + (i * z2)  # Interpolate latent
                 sample, sample_score = gen_sample(tparams, f_next, model_options,
                                                   maxlen=seqlen, argmax=False, zmuv=z.transpose(1, 0, 2),
-                                                  unk_id=data.unk_id, eos_id=data.eos_id)
+                                                  unk_id=data.unk_id, eos_id=data.eos_id, bos_id=data.bos_id)
                 #print("LL: {}".format(sample_score))
                 data.print_batch(sample.T, eos_id=data.eos_id, print_number=False)
 
@@ -202,10 +208,10 @@ def main():
             data.print_batch(batch[0][[0]], eos_id=data.eos_id, print_number=False)
             for i in np.linspace(0, 1, 11):
                 print("{}: ".format(i), end="")
-                z = (i * z1) + ((1 - i) * z2)  # Interpolate latent
+                z = ((1 - i) * z1) + (i * z2)  # Interpolate latent
                 sample, sample_score = gen_sample(tparams, f_next, model_options,
                                                   maxlen=seqlen, argmax=True, zmuv=z.transpose(1, 0, 2),
-                                                  unk_id=data.unk_id, eos_id=data.eos_id)
+                                                  unk_id=data.unk_id, eos_id=data.eos_id, bos_id=data.bos_id)
                 #print("LL: {}".format(sample_score))
                 data.print_batch(sample.T, eos_id=data.eos_id, print_number=False)
 

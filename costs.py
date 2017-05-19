@@ -1,5 +1,6 @@
 import numpy as np
-
+import theano
+from theano import tensor
 
 def np_log_mean_exp(x, axis=None):
     assert (axis is not None), "please provide an axis..."
@@ -36,3 +37,4 @@ def iwae_multi_eval(x, y, x_mask, iters, cost_func, iwae_num, dim_z):
     log_ws_mat = log_p_xIz + log_p_z - log_q_zIx
     iwae_bounds = -1.0 * np_log_mean_exp(log_ws_mat, axis=1)
     return iwae_bounds
+

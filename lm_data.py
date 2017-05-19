@@ -13,48 +13,32 @@ def chunk(sequence, n):
         yield sequence[i:i + n]
 
 
-def load_ptb(data_dir, level='char', create_pkl=True):
+def load_ptb(data_dir, create_pkl=True):
     '''
     Load a character-based version of the text8 corpus.
     '''
+
     if create_pkl:
-        tr_text = open(os.path.join(data_dir, 'ptb.train.txt')).read()
-        va_text = open(os.path.join(data_dir, 'ptb.valid.txt')).read()
-        te_text = open(os.path.join(data_dir, 'ptb.test.txt')).read()
+        tr_text = open(os.path.join(data_dir, 'ptb.train.txt')).readlines()
+        va_text = open(os.path.join(data_dir, 'ptb.valid.txt')).readlines()
+        te_text = open(os.path.join(data_dir, 'ptb.test.txt')).readlines()
         # initialize arrays for holding data
         tr_toks, va_toks, te_toks = [], [], []
 
         # initialize maps for fetching chars <-> ints
-        word2id = {'__pad__': 0, '__go__': 1}
-        id2word = ['__pad__', '__go__']
-        word2tf = {}
+        word2id = {'__pad__': 0, '</S>': 1}
+        id2word = ['__pad__', '</S>']
 
-        # scan text files and convert to lists of int-valued keys
-        for f_text, f_toks in [(tr_text, tr_toks),
-                               (va_text, va_toks),
-                               (te_text, te_toks)]:
-            if (level == 'word'):
-                f_text = f_text.split()
-            for tok in f_text:
-                if not (tok in word2tf):
-                    word2tf[tok] = 0
-                word2tf[tok] += 1
-
-        # sort word ids by frequency
-        mc_wrd = sorted(word2tf.items(), key=lambda x: x[1], reverse=True)
-        for wrd, _ in mc_wrd:
-            word2id[wrd] = len(id2word)
-            id2word.append(wrd)
-
-        # scan text files and convert to lists of int-valued keys
-        for f_text, f_toks in [(tr_text, tr_toks),
-                               (va_text, va_toks),
-                               (te_text, te_toks)]:
-            if (level == 'word'):
-                f_text = f_text.split()
-            for tok in f_text:
-                assert (tok in word2id), 'something went wrong'
-                f_toks.append(word2id[tok])
+        for text, toks in ((tr_text, tr_toks),
+                           (va_text, va_toks),
+                           (te_text, te_toks)):
+            for line in text:
+                line = line.split() + ['</S>']
+                for word in line:
+                    if word not in word2id:
+                        word2id[word] = len(word2id)
+                        id2word.append(word)
+                    toks.append(word2id[word])
 
         # dict for easy handling
         data_dict = {'train': np.asarray(tr_toks),
@@ -64,13 +48,13 @@ def load_ptb(data_dir, level='char', create_pkl=True):
                      'idx2word': id2word}
 
         # dump the processed data for easier reloading
-        f_handle = file(os.path.join(data_dir, 'ptb_dataset_{}.pkl'.format(level)), 'wb')
+        f_handle = file(os.path.join(data_dir, 'ptb_dataset.pkl'), 'wb')
         cPickle.dump(data_dict, f_handle, protocol=-1)
         f_handle.close()
     else:
         # load preprocessed data
         data_dict = cPickle.load(
-            open(os.path.join(data_dir, 'ptb_dataset_{}.pkl'.format(level))))
+            open(os.path.join(data_dir, 'ptb_dataset.pkl')))
     return data_dict
 
 
@@ -192,7 +176,7 @@ def load_text8(data_dir, level='char', create_pkl=True):
     return data_dict
 
 
-def load_imdb_jmars(dir_path=None, max_sentence_len=16, topk=None):
+def load_imdb_jmars(dir_path=None, max_sentence_len=16, min_sentence_len=5, topk=None):
     ''' Loads the IMDB dataset used in JMARS [1].
 
     This is a collection of 350k movie reviews. Each review has the following
@@ -251,7 +235,7 @@ def load_imdb_jmars(dir_path=None, max_sentence_len=16, topk=None):
         dir_path = pjoin(".", "imdb", "data")
 
     if max_sentence_len is not None:
-        filename = "imdb_jmars_maxlen{}.pkl".format(max_sentence_len)
+        filename = "imdb_jmars_maxlen{}_minlen{}.pkl".format(max_sentence_len, min_sentence_len)
     else:
         filename = "imdb_jmars.pkl"
         max_sentence_len = np.inf
@@ -301,6 +285,9 @@ def load_imdb_jmars(dir_path=None, max_sentence_len=16, topk=None):
             for s in sent_tokenize(review):
                 words = word_tokenize(s)
                 if len(words) > max_sentence_len:
+                    continue
+
+                if len(words) < min_sentence_len:
                     continue
 
                 for w in words:
@@ -391,6 +378,7 @@ def load_imdb_jmars(dir_path=None, max_sentence_len=16, topk=None):
     data_dict["name"] = "IMDB"
     data_dict["level"] = "w"
     data_dict["max_seq_len"] = max_sentence_len
+    data_dict["min_seq_len"] = min_sentence_len
     data_dict["vocab_size"] = len(data_dict["idx2word"])
     data_dict["vocab_path"] = path[:-4] + ".tsv"
 
@@ -502,7 +490,7 @@ class Text8():
 class IMDB_JMARS():
     def __init__(self, data_path, seq_len, batch_size, topk=16000, rng_seed=1234):
         # load ptb word sequence
-        data = load_imdb_jmars(data_path, max_sentence_len=seq_len, topk=topk)
+        data = load_imdb_jmars(data_path, max_sentence_len=seq_len, min_sentence_len=5, topk=topk)
 
         self.tr_words = data['train']
         self.va_words = data['valid']
@@ -600,9 +588,9 @@ class IMDB_JMARS():
 
 
 class PTB():
-    def __init__(self, data_path, seq_len, batch_size, level="word", rng_seed=1234):
+    def __init__(self, data_path, seq_len, batch_size, rng_seed=1234):
         # load ptb word sequence
-        text8_data = load_ptb(data_path, level=level, create_pkl=False)
+        text8_data = load_ptb(data_path, create_pkl=True)
 
         self.tr_words = text8_data['train']
         self.va_words = text8_data['valid']
@@ -617,10 +605,13 @@ class PTB():
         print('te_words.shape: {}'.format(self.te_words.shape))
         print('voc_size: {}'.format(len(self.idx2word)))
 
+        self.pad_id = self.word2idx['__pad__']
+        self.unk_id = self.word2idx['<unk>']
+        self.bos_id = self.word2idx['</S>']
+        self.eos_id = self.word2idx['</S>']
         self.batch_size = batch_size
         self.voc_size = len(self.idx2word)  # # of possible words
         self.seq_len=seq_len           # length of input sequences
-        self.pad_id = self.word2idx['__pad__']
         self.rng_seed = rng_seed
         self.rng = np.random.RandomState(rng_seed)
 
@@ -653,7 +644,7 @@ class PTB():
         # concatenate in nbatch lines
         x = np.concatenate(x, axis=0)
         # start with 0 vector (first token prediction)
-        x = np.concatenate([np.zeros((self.batch_size, 1)), x], axis=1)
+        x = np.concatenate([np.zeros((self.batch_size, 1)) + self.bos_id, x], axis=1)
         x = x.astype("int64")
         Xva = x[:, :-1]
         Yva = x[:, 1:]
@@ -669,7 +660,7 @@ class PTB():
         '''
         # sample a batch of one-hot subsequences from the source sequence
         x = self._sample_subseqs(source_seq, self.batch_size, self.seq_len * n_batches)
-        x = np.concatenate([np.zeros((self.batch_size, 1)), x], axis=1)
+        x = np.concatenate([np.zeros((self.batch_size, 1)) + self.bos_id, x], axis=1)
         x = x.astype("int64")
         x_in = x[:, :-1]
         y_in = x[:, 1:]
