@@ -121,8 +121,10 @@ def main():
         get_states = theano.function([x, y, x_mask, zmuv], [states_gen[-1], memories_gen[-1]],
                                       updates=(updates_gen + updates_rev))
 
-        dset_size = len(iamondb_valid.data[0])
-        for start in range(0, dset_size, 1):
+        samples = []
+        indices = np.arange(len(iamondb_valid.data[0]))
+        rng.shuffle(indices)
+        for start in indices[:args.nb_samples]:
             end = start + 1
             # x.shape : seq_len, batch_size, input_dim
             x, x_mask = iamondb_valid.slices(start, end)
@@ -137,9 +139,19 @@ def main():
             print("NLL: {}".format(sample_score))
 
             sample = np.concatenate([y[:, 0, :], sample[0]], axis=0)
-            plot_lines_iamondb_example(sample, offsets_provided=True,
-                                       mean=X_mean, std=X_std, colored=True,
-                                       show=True)
+            samples.append(sample)
+
+            if args.verbose:
+                plot_lines_iamondb_example(sample, offsets_provided=True,
+                                           mean=X_mean, std=X_std, colored=True,
+                                           show=True)
+
+        # Print all of them
+        samples = np.concatenate(samples, axis=0)
+        plot_lines_iamondb_example(samples.transpose(1, 0, 2), offsets_provided=True,
+                                   mean=X_mean, std=X_std, colored=True,
+                                   show=True)
+        sys.exit(0)
 
     if args.eval:
         from lm_lstm_iamondb import ELBOcost, build_rev_model, build_gen_model, pred_probs
@@ -181,9 +193,10 @@ def main():
         samples += [sample]
         print("NLL: {}".format(sample_score))
 
-        plot_lines_iamondb_example(sample[0], offsets_provided=True,
-                                   mean=X_mean, std=X_std, colored=True,
-                                   show=True)
+        if args.verbose:
+            plot_lines_iamondb_example(sample[0], offsets_provided=True,
+                                       mean=X_mean, std=X_std, colored=True,
+                                       show=True)
 
     # Print all of them
     samples = np.concatenate(samples, axis=0)
