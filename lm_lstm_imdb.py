@@ -487,8 +487,10 @@ def latent_lstm_layer(
                 tparams[_p('inf', 'b')],
                 tparams[_p('inf_mus', 'W')],
                 tparams[_p('inf_mus', 'b')],
-                tparams[_p('gen_mus', 'W')],
-                tparams[_p('gen_mus', 'b')]]
+                tparams[_p('gen_mus1', 'W')],
+                tparams[_p('gen_mus1', 'b')],
+                tparams[_p('gen_mus2', 'W')],
+                tparams[_p('gen_mus2', 'b')]]
 
     # initial/previous memory
     if init_memory is None:
@@ -504,7 +506,8 @@ def latent_lstm_layer(
               z_mus_w, z_mus_b,
               inf_w, inf_b,
               inf_mus_w, inf_mus_b,
-              gen_mus_w, gen_mus_b,
+              gen_mus_w1, gen_mus_b1,
+              gen_mus_w2, gen_mus_b2,
               hdrop=None):
 
         p_z = lrelu(tensor.dot(sbefore, trans_1_w) + trans_1_b)
@@ -521,13 +524,15 @@ def latent_lstm_layer(
             log_qzIx = tensor.sum(log_prob_gaussian(tild_z_t, encoder_mu, encoder_sigma), axis=-1)
             kld = gaussian_kld(encoder_mu, encoder_sigma, z_mu, z_sigma)
             kld = tensor.sum(kld, axis=-1)
-            decoder_mus = tensor.dot(tild_z_t, gen_mus_w) + gen_mus_b
+            decoder_mus = tensor.dot(tild_z_t, gen_mus_w1) + gen_mus_b1
+            decoder_mus = lrelu(decoder_mus)
+            decoder_mus = tensor.dot(decoder_mus, gen_mus_w2) + gen_mus_b2
             decoder_mu, decoder_sigma = decoder_mus[:, :d_.shape[1]], decoder_mus[:, d_.shape[1]:]
             decoder_mu = tensor.tanh(decoder_mu)
             decoder_mu = T.clip(decoder_mu, -10., 10.)
             decoder_sigma = T.clip(decoder_sigma, -10., 10.)
             disc_d_ = theano.gradient.disconnected_grad(d_)
-            recon_cost = tensor.sqr(decoder_mu - disc_d_)
+            recon_cost = -log_prob_gaussian(disc_d_, decoder_mu, decoder_sigma)
             recon_cost = tensor.sum(recon_cost, axis=-1)
         else:
             if provide_z:
@@ -543,6 +548,7 @@ def latent_lstm_layer(
 
         # recurrent dropout
         if hdrop is not None:
+            print('Using dropout.... !!!!')
             sbefore = sbefore * hdrop
         z = tild_z_t
         preact = tensor.dot(sbefore, param('U')) +  tensor.dot(z, W_cond)
@@ -581,7 +587,7 @@ def latent_lstm_layer(
 
         trng = RandomStreams(seed)
         hdrop = trng.binomial(
-            (lstm_state_below.shape[1], options['dim']), p=0.9, n=1,
+            (lstm_state_below.shape[1], options['dim']), p=0.85, n=1,
             dtype=theano.config.floatX)
         hdrop = is_train * hdrop + (1 - is_train) * tensor.ones_like(hdrop)
         non_seqs.append(hdrop)
@@ -629,7 +635,8 @@ def init_params(options):
     params = get_layer('ff')[0](options, params, prefix='inf', nin = 2 * options['dim'], nout=options['encoder_hidden'], ortho=False)
     params = get_layer('ff')[0](options, params, prefix='inf_mus', nin = options['encoder_hidden'], nout=2 * options['dim_z'], ortho=False)
     #Generative Network params
-    params = get_layer('ff')[0](options, params, prefix='gen_mus', nin = options['dim_z'], nout=2 * options['dim'], ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='gen_mus1', nin = options['dim_z'], nout=options['dim'], ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='gen_mus2', nin = options['dim'], nout=2 * options['dim'], ortho=False)
     return params
 
 
@@ -743,7 +750,8 @@ def build_sampler(tparams, options, trng, provide_z=False):
 
 # generate sample
 def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kickstart=None, zmuv=None,
-               unk_id=None, eos_id=None):
+               unk_id=None, eos_id=None, bos_id=None):
+    assert bos_id is not None
     samples = []
     samples_scores = 0
     nb_samples = 1
@@ -759,7 +767,7 @@ def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kic
         nb_samples = zmuv.shape[0]
 
     # initial token is indicated by a -1 and initial state is zero
-    next_w = -1 * numpy.ones((nb_samples,)).astype('int64')
+    next_w = bos_id * numpy.ones((nb_samples,)).astype('int64')
     next_state = numpy.zeros((nb_samples, options['dim'])).astype('float32')
     next_memory = numpy.zeros((nb_samples, options['dim'])).astype('float32')
 
