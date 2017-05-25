@@ -3,6 +3,7 @@
 import os
 from lm_lstm_imdb import train
 
+
 def main(job_id, params):
     print(params)
     validerr = train(
