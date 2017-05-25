@@ -29,6 +29,7 @@ def main(job_id, params):
         kl_rate=0.0001)
     return validerr
 
+
 if __name__ == '__main__':
     try:
         # Created experiments folder, if needed.
