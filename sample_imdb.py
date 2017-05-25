@@ -87,7 +87,7 @@ def main():
 
             print("Samples (fixed latent)")
             kickstart = np.tile(x[:half], reps=(1, args.nb_samples))
-            sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=args.seqlen, argmax=False, kickstart=kickstart, zmuv=zmuv,
+            sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=20, argmax=False, kickstart=kickstart, zmuv=zmuv,
                                               unk_id=data.unk_id, eos_id=data.eos_id, bos_id=data.bos_id)
             #print("LL: {}".format(sample_score))
             data.print_batch(sample.T, eos_id=data.eos_id)
@@ -95,7 +95,7 @@ def main():
             print("Argmax (sample latent)")
             zmuv = rng.normal(loc=0.0, scale=1.0,
                               size=(args.nb_samples, model_options['dim_z'])).astype('float32')
-            sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=args.seqlen, argmax=True, kickstart=kickstart, zmuv=zmuv,
+            sample, sample_score = gen_sample(tparams, f_next, model_options, maxlen=20, argmax=True, kickstart=kickstart, zmuv=zmuv,
                                               unk_id=data.unk_id, eos_id=data.eos_id, bos_id=data.bos_id)
             #print("LL: {}".format(sample_score))
             data.print_batch(sample.T, eos_id=data.eos_id)
@@ -183,8 +183,8 @@ def main():
             batch = data.prepare_batch([s1_id, s2_id])
             data.print_batch(batch[0])
 
-            seqlen = batch[0].shape[1]
-            zmuv = rng.normal(loc=0.0, scale=1.0, size=(seqlen, 2, model_options['dim_z'])).astype('float32')
+            zmuv = rng.normal(loc=0.0, scale=1.0, size=(
+                batch[0].shape[1], 2, model_options['dim_z'])).astype('float32')
             batch_z = get_latents(batch[0].T, batch[1].T, batch[2].T, zmuv)
             z1 = batch_z[:, [0], :]
             z2 = batch_z[:, [1], :]
@@ -198,10 +198,12 @@ def main():
             for i in np.linspace(0, 1, 11):
                 print("{}: ".format(i), end="")
                 z = ((1 - i) * z1) + (i * z2)  # Interpolate latent
+                z = np.repeat(z, 10, axis=1)
                 sample, sample_score = gen_sample(tparams, f_next, model_options,
-                                                  maxlen=seqlen, argmax=False, zmuv=z,
+                                                  maxlen=20, argmax=False, zmuv=z,
                                                   unk_id=data.unk_id, eos_id=data.eos_id, bos_id=data.bos_id)
-                data.print_batch(sample.T, eos_id=data.eos_id, print_number=False)
+                sample = [sample.T[np.argsort(sample_score)[-1]]]
+                data.print_batch(sample, eos_id=data.eos_id, print_number=False)
 
             data.print_batch(batch[0][[1]], eos_id=data.eos_id, print_number=False)
 
@@ -211,7 +213,7 @@ def main():
                 print("{}: ".format(i), end="")
                 z = ((1 - i) * z1) + (i * z2)  # Interpolate latent
                 sample, sample_score = gen_sample(tparams, f_next, model_options,
-                                                  maxlen=seqlen, argmax=True, zmuv=z,
+                                                  maxlen=20, argmax=True, zmuv=z,
                                                   unk_id=data.unk_id, eos_id=data.eos_id, bos_id=data.bos_id)
                 #print("LL: {}".format(sample_score))
                 data.print_batch(sample.T, eos_id=data.eos_id, print_number=False)

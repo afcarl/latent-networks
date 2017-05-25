@@ -777,12 +777,20 @@ def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kic
                 loc=0.0, scale=1.0,
                 size=(next_w.shape[0], options['dim_z'])).astype('float32')
         else:
-            zmuv_t = zmuv[ii, :, :]
+            if ii >= zmuv.shape[0]:
+                zmuv_t = numpy.random.normal(
+                    loc=0.0, scale=1.0,
+                    size=(next_w.shape[0], options['dim_z'])).astype('float32')
+            else:
+                zmuv_t = zmuv[ii, :, :]
 
         inps = [next_w, next_state, next_memory, zmuv_t]
         ret = f_next(*inps)
         next_p, next_state, next_memory = ret
 
+        next_p[:, 0] = 0.
+        if bos_id is not None:
+            next_p[:, bos_id] = 0.
         if unk_id is not None:
             next_p[:, unk_id] = 0.
         if (eos_id is not None) and ii < 5:
@@ -791,10 +799,14 @@ def gen_sample(tparams, f_next, options, trng=None, maxlen=30, argmax=False, kic
 
         if argmax:
             nw = next_p.argmax(axis=1)
+            samples_scores += np.log(next_p[np.arange(next_w.shape[0]), nw])
         else:
             nw = []
+            next_pi = numpy.argsort(next_p, axis=1)[:, ::-1][:, :10]
+            next_pp = numpy.sort(next_p, axis=1)[:, ::-1][:, :10]
+            next_pp = next_pp / numpy.sum(next_pp, axis=1)[:, None]
             for i in range(next_p.shape[0]):
-                nw_i = numpy.random.choice(range(next_p.shape[1]), 1, p=next_p[i, :])
+                nw_i = numpy.random.choice(next_pi[i], 1, p=next_pp[i, :])
                 nw.append(nw_i[0])
             nw = numpy.asarray(nw)
 
