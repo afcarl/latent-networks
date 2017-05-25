@@ -351,8 +351,7 @@ def lstm_layer(tparams, state_below, options,
         rval = [h, c]
     else:
         if mask.ndim == 3 and mask.ndim == state_below.ndim:
-            mask = mask.reshape((
-                mask.shape[0], mask.shape[1]*mask.shape[2])).dimshuffle(0, 1, 'x')
+            mask = mask.reshape((mask.shape[0], mask.shape[1] * mask.shape[2])).dimshuffle(0, 1, 'x')
         elif mask.ndim == 2:
             mask = mask.dimshuffle(0, 1, 'x')
 
@@ -365,13 +364,9 @@ def lstm_layer(tparams, state_below, options,
     return [rval, updates]
 
 
-def latent_lstm_layer(
-       tparams, state_below,
-       options, prefix='lstm', back_states=None,
-       gaussian_s=None, mask=None, one_step=False,
-       init_state=None, init_memory=None, nsteps=None,
-       provide_z=False,
-       **kwargs):
+def latent_lstm_layer(tparams, state_below, options, prefix='lstm', back_states=None,
+                      gaussian_s=None, mask=None, one_step=False, init_state=None,
+                      init_memory=None, nsteps=None, provide_z=False, **kwargs):
 
     if nsteps is None:
         nsteps = state_below.shape[0]
@@ -459,7 +454,8 @@ def latent_lstm_layer(
             kld = gaussian_kld(encoder_mu, encoder_sigma, z_mu, z_sigma)
             kld = tensor.sum(kld, axis=-1)
             # auxiliary projection
-            aux_hid_1 = tensor.dot(tild_z_t, aux_ff1_w) + aux_ff1_b
+            aux_hid_inp = tensor.concatenate([tild_z_t, sbefore], axis=1)
+            aux_hid_1 = tensor.dot(aux_hid_inp, aux_ff1_w) + aux_ff1_b
             aux_hid_1 = lrelu(aux_hid_1)
             aux_hid_2 = tensor.dot(aux_hid_1, aux_ff2_w) + aux_ff2_b
             decoder_mu, decoder_sigma = aux_hid_2[:, :d_.shape[1]], aux_hid_2[:, d_.shape[1]:]
@@ -517,7 +513,7 @@ def latent_lstm_layer(
     else:
         if mask.ndim == 3 and mask.ndim == state_below.ndim:
             mask = mask.reshape((
-                mask.shape[0], mask.shape[1]*mask.shape[2])).dimshuffle(0, 1, 'x')
+                mask.shape[0], mask.shape[1] * mask.shape[2])).dimshuffle(0, 1, 'x')
         elif mask.ndim == 2:
             mask = mask.dimshuffle(0, 1, 'x')
         trng = RandomStreams(seed)
@@ -584,7 +580,7 @@ def init_params(options):
                                 ortho=False)
     # auxiliary cost params
     params = get_layer('ff')[0](options, params, prefix='aux_ff1',
-                                nin=options['dim_z'], nout=options['prior_hidden'],
+                                nin=options['dim_z'] + options['dim'], nout=options['prior_hidden'],
                                 ortho=False)
     params = get_layer('ff')[0](options, params, prefix='aux_ff2',
                                 nin=options['prior_hidden'], nout=2 * options['dim'],
@@ -629,12 +625,16 @@ def build_rev_model(tparams, options, x, y, x_mask):
 def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     # disconnecting reconstruction gradient from going in the backward encoder
     x_emb = get_layer('ff')[1](tparams, x, options, prefix='ff_in_lstm', activ='lambda x: x')
-    rvals, updates_gen = get_layer('latent_lstm')[1](
-       tparams, state_below=x_emb, options=options,
-       prefix='encoder', mask=x_mask, gaussian_s=zmuv,
-       back_states=states_rev)
+    rvals, updates_gen = \
+        get_layer('latent_lstm')[1](
+            tparams, state_below=x_emb, options=options,
+            prefix='encoder', mask=x_mask, gaussian_s=zmuv,
+            back_states=states_rev)
 
-    states_gen, memories_gen, z, log_pz, log_qzIx, kld, rec_cost_rev = rvals[0], rvals[1], rvals[2], rvals[3], rvals[4], rvals[5], rvals[6]
+    (states_gen, memories_gen, z, log_pz, log_qzIx, kld, rec_cost_rev) = \
+        (rvals[0], rvals[1], rvals[2],
+         rvals[3], rvals[4], rvals[5],
+         rvals[6])
     out_logits = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_mus', activ='linear')
     out_probs = masked_softmax(out_logits, axis=-1)
 
