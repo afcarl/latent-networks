@@ -8,7 +8,7 @@ import theano
 import theano.tensor as T
 import theano.tensor as tensor
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
-from lm_data import PTB
+from lm_data import IMDB_JMARS
 
 import cPickle as pkl
 import ipdb
@@ -27,8 +27,14 @@ profile = False
 seed = 1234
 num_iwae_samps = 25
 num_iwae_iters = 1
+iwae_train_samples = 5
 numpy.random.seed(seed)
 is_train = tensor.scalar('is_train')
+
+
+def log_mean_exp(x, axis):
+    m = tensor.max(x, axis=axis, keepdims=True)
+    return m + tensor.log(tensor.mean(tensor.exp(x - m), axis=axis, keepdims=True))
 
 
 def param_init_hsoftmax(options, params, nin, ncls, nout, prefix='hsoftmax'):
@@ -487,8 +493,12 @@ def latent_lstm_layer(
                 tparams[_p('inf', 'b')],
                 tparams[_p('inf_mus', 'W')],
                 tparams[_p('inf_mus', 'b')],
-                tparams[_p('gen_mus', 'W')],
-                tparams[_p('gen_mus', 'b')]]
+                tparams[_p('gen_mus1', 'W')],
+                tparams[_p('gen_mus1', 'b')],
+                tparams[_p('gen_mus2', 'W')],
+                tparams[_p('gen_mus2', 'b')],
+                tparams[_p('gen_mus3', 'W')],
+                tparams[_p('gen_mus3', 'b')]]
 
     # initial/previous memory
     if init_memory is None:
@@ -504,7 +514,9 @@ def latent_lstm_layer(
               z_mus_w, z_mus_b,
               inf_w, inf_b,
               inf_mus_w, inf_mus_b,
-              gen_mus_w, gen_mus_b,
+              gen_mus_w1, gen_mus_b1,
+              gen_mus_w2, gen_mus_b2,
+              gen_mus_w3, gen_mus_b3,
               hdrop=None):
 
         p_z = lrelu(tensor.dot(sbefore, trans_1_w) + trans_1_b)
@@ -521,7 +533,9 @@ def latent_lstm_layer(
             log_qzIx = tensor.sum(log_prob_gaussian(tild_z_t, encoder_mu, encoder_sigma), axis=-1)
             kld = gaussian_kld(encoder_mu, encoder_sigma, z_mu, z_sigma)
             kld = tensor.sum(kld, axis=-1)
-            decoder_mus = tensor.dot(tild_z_t, gen_mus_w) + gen_mus_b
+            decoder_mus = tensor.dot(tild_z_t, gen_mus_w1) + gen_mus_b1
+            decoder_mus = lrelu(decoder_mus)
+            decoder_mus = tensor.dot(decoder_mus, gen_mus_w2) + gen_mus_b2
             decoder_mu, decoder_sigma = decoder_mus[:, :d_.shape[1]], decoder_mus[:, d_.shape[1]:]
             decoder_mu = tensor.tanh(decoder_mu)
             decoder_mu = T.clip(decoder_mu, -10., 10.)
@@ -545,6 +559,7 @@ def latent_lstm_layer(
         if hdrop is not None:
             sbefore = sbefore * hdrop
         z = tild_z_t
+        z = lrelu(tensor.dot(z, gen_mus_w3) + gen_mus_b3)
         preact = tensor.dot(sbefore, param('U')) +  tensor.dot(z, W_cond)
         preact += sbelow
         preact += param('b')
@@ -581,7 +596,7 @@ def latent_lstm_layer(
 
         trng = RandomStreams(seed)
         hdrop = trng.binomial(
-            (lstm_state_below.shape[1], options['dim']), p=0.9, n=1,
+            (lstm_state_below.shape[1], options['dim']), p=0.85, n=1,
             dtype=theano.config.floatX)
         hdrop = is_train * hdrop + (1 - is_train) * tensor.ones_like(hdrop)
         non_seqs.append(hdrop)
@@ -608,10 +623,10 @@ def init_params(options):
                                 nin=options['dim'],
                                 nout=options['dim_input'],
                                 ortho=True)
-    U = numpy.concatenate([norm_weight(options['dim_z'], options['dim']),
-                           norm_weight(options['dim_z'], options['dim']),
-                           norm_weight(options['dim_z'], options['dim']),
-                           norm_weight(options['dim_z'], options['dim'])], axis=1)
+    U = numpy.concatenate([norm_weight(options['dim'], options['dim']),
+                           norm_weight(options['dim'], options['dim']),
+                           norm_weight(options['dim'], options['dim']),
+                           norm_weight(options['dim'], options['dim'])], axis=1)
     params[_p('z_cond', 'W')] = U
 
     params = get_layer(options['encoder'])[0](options, params,
@@ -629,7 +644,9 @@ def init_params(options):
     params = get_layer('ff')[0](options, params, prefix='inf', nin = 2 * options['dim'], nout=options['encoder_hidden'], ortho=False)
     params = get_layer('ff')[0](options, params, prefix='inf_mus', nin = options['encoder_hidden'], nout=2 * options['dim_z'], ortho=False)
     #Generative Network params
-    params = get_layer('ff')[0](options, params, prefix='gen_mus', nin = options['dim_z'], nout=2 * options['dim'], ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='gen_mus3', nin = options['dim_z'], nout=options['dim'], ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='gen_mus1', nin = options['dim_z'], nout=options['dim'], ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='gen_mus2', nin = options['dim'], nout=2 * options['dim'], ortho=False)
     return params
 
 
@@ -886,20 +903,21 @@ def train(dim_input=200,  # input vector dimensionality
           kl_rate=0.0003):
 
     prior_hidden = dim
-    dim_z = 32
+    dim_z = 100
     encoder_hidden = dim
     learn_h0 = False
 
-    desc = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
+    prefix = 'iwae{}'.format(iwae_train_samples)
+    desc = saveto + prefix + '_seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
         str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_log.txt'
-    opts = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
+    opts = saveto + prefix + '_seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
         str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_opts.pkl'
-    pars = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
+    pars = saveto + prefix + '_seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
         str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_pars.npz'
 
     print(desc)
 
-    data = PTB("./experiments/data", 35, batch_size)
+    data = IMDB_JMARS("./experiments/data", seq_len=16, batch_size=batch_size, topk=16000)
     dim_input = data.voc_size
 
     # Model options
@@ -930,9 +948,18 @@ def train(dim_input=200,  # input vector dimensionality
         log_pxIz, log_pz, log_qzIx, z = \
         build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
-    vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f).mean()
-    elbo_cost = ELBOcost(nll_gen, kld, kld_weight=1.).mean()
-    aux_cost = (numpy.float32(weight_aux) * (rec_cost_rev + nll_rev)).mean()
+    #
+    log_ws = log_pxIz - log_qzIx + log_pz
+    log_ws_matrix = log_ws.reshape((x.shape[1] / iwae_train_samples, iwae_train_samples))
+    log_ws_minus_max = log_ws_matrix - tensor.max(log_ws_matrix, axis=1, keepdims=True)
+    ws = tensor.exp(log_ws_minus_max)
+    ws_normalized = ws / T.sum(ws, axis=1, keepdims=True)
+    ws_normalized = theano.gradient.disconnected_grad(ws_normalized)
+
+    #
+    vae_cost = -1. * tensor.sum(log_ws_matrix * ws_normalized, axis=1).mean() + 0. * weight_f
+    elbo_cost = -1. * log_mean_exp(log_ws_matrix, axis=1).mean()
+    aux_cost = (numpy.float32(weight_aux) * (rec_cost_rev + 0. * nll_rev)).mean()
     tot_cost = (vae_cost + aux_cost)
     nll_gen_cost = nll_gen.mean()
     nll_rev_cost = nll_rev.mean()
@@ -996,6 +1023,9 @@ def train(dim_input=200,  # input vector dimensionality
 
         for x, y, x_mask in data.get_train_batch():
             # Transpose data to have the time steps on dimension 0.
+            x = numpy.repeat(x, iwae_train_samples, axis=0)
+            y = numpy.repeat(y, iwae_train_samples, axis=0)
+            x_mask = numpy.repeat(x_mask, iwae_train_samples, axis=0)
             x = x.transpose(1, 0).astype('int32')
             y = y.transpose(1, 0).astype('int32')
             x_mask = x_mask.transpose(1, 0).astype('float32')

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import os
-from lm_lstm_ptb import train
+from lm_lstm_imdb_iwae import train
 
 def main(job_id, params):
     print(params)
@@ -31,19 +31,19 @@ def main(job_id, params):
 if __name__ == '__main__':
     try:
         # Created experiments folder, if needed.
-        os.makedirs("./experiments/ptb/")
+        os.makedirs("./experiments/imdb/")
     except:
         pass
 
     main(0, {
-        'model': ['./experiments/ptb/'],
+        'model': ['./experiments/imdb/'],
         'dim_input': [-1],  # Determine but the dataset.
         'dim': [500],
         'dim_proj': [300],
         'optimizer': ['adam'],
         'decay-c': [0.],
         'kl_start': [1.],
-        'weight_aux': [0.],
+        'weight_aux': [0.005],
         'use-dropout': [False],
         'learning-rate': [0.001],
         'reload': [False]})
