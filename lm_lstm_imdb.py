@@ -325,8 +325,8 @@ def lstm_layer(tparams, state_below, options,
             return _x[:, :, n*dim:(n+1)*dim]
         return _x[:, n*dim:(n+1)*dim]
 
-    def _step(mask, sbelow, sbefore, cell_before, *args):
-        preact = tensor.dot(sbefore, param('U'))
+    def _step(mask, sbelow, h_tm1, c_tm1, *args):
+        preact = tensor.dot(h_tm1, param('U'))
         preact += sbelow
         preact += param('b')
 
@@ -335,10 +335,10 @@ def lstm_layer(tparams, state_below, options,
         o = tensor.nnet.sigmoid(_slice(preact, 2, dim))
         c = tensor.tanh(_slice(preact, 3, dim))
 
-        c = f * cell_before + i * c
-        c = mask * c + (1. - mask) * cell_before
+        c = f * c_tm1 + i * c
+        c = mask * c + (1. - mask) * c_tm1
         h = o * tensor.tanh(c)
-        h = mask * h + (1. - mask) * sbefore
+        h = mask * h + (1. - mask) * h_tm1
 
         return h, c
 
@@ -375,6 +375,7 @@ def latent_lstm_layer(
        provide_z=False,
        **kwargs):
 
+    dim = options['dim']
     if nsteps is None:
         nsteps = state_below.shape[0]
 
@@ -386,8 +387,6 @@ def latent_lstm_layer(
     # helper for getting params
     def param(name):
         return tparams[_p(prefix, name)]
-
-    dim = param('U').shape[0]
 
     if mask is None:
         mask = tensor.alloc(1., state_below.shape[0], 1)
@@ -403,23 +402,24 @@ def latent_lstm_layer(
             init_state = tensor.alloc(init_state0, n_samples, dim)
             tparams[_p(prefix, 'h0')] = init_state0
 
-    U = param('U')
-    b = param('b')
-    W = param('W')
     non_seqs = [
-        U, b, W, tparams[_p('z_cond', 'W')],
-        tparams[_p('trans_1', 'W')],
-        tparams[_p('trans_1', 'b')],
-        tparams[_p('z_mus', 'W')],
-        tparams[_p('z_mus', 'b')],
-        tparams[_p('inf', 'W')],
-        tparams[_p('inf', 'b')],
-        tparams[_p('inf_mus', 'W')],
-        tparams[_p('inf_mus', 'b')],
-        tparams[_p('gen_mus1', 'W')],
-        tparams[_p('gen_mus1', 'b')],
-        tparams[_p('gen_mus2', 'W')],
-        tparams[_p('gen_mus2', 'b')]]
+        param('U'),
+        tparams[_p('pri_ff_1', 'W')],
+        tparams[_p('pri_ff_1', 'b')],
+        tparams[_p('pri_ff_2', 'W')],
+        tparams[_p('pri_ff_2', 'b')],
+        tparams[_p('inf_ff_1', 'W')],
+        tparams[_p('inf_ff_1', 'b')],
+        tparams[_p('inf_ff_2', 'W')],
+        tparams[_p('inf_ff_2', 'b')],
+        tparams[_p('aux_ff_1', 'W')],
+        tparams[_p('aux_ff_1', 'b')],
+        tparams[_p('aux_ff_2', 'W')],
+        tparams[_p('aux_ff_2', 'b')],
+        tparams[_p('gen_ff_1', 'W')],
+        tparams[_p('gen_ff_1', 'b')],
+        tparams[_p('gen_ff_2', 'W')]
+    ]
 
     # initial/previous memory
     if init_memory is None:
@@ -430,68 +430,75 @@ def latent_lstm_layer(
             return _x[:, :, n*dim:(n+1)*dim]
         return _x[:, n*dim:(n+1)*dim]
 
-    def _step(mask, sbelow, d_, g_s, sbefore, cell_before,
-              U, b, W, W_cond, trans_1_w, trans_1_b, z_mus_w, z_mus_b,
-              inf_w, inf_b, inf_mus_w, inf_mus_b,
-              gen_mus_w1, gen_mus_b1,
-              gen_mus_w2, gen_mus_b2, hdrop=None):
-
-        p_z = lrelu(tensor.dot(sbefore, trans_1_w) + trans_1_b)
-        z_mus = tensor.dot(p_z, z_mus_w) + z_mus_b
-        z_dim = z_mus.shape[-1] / 2
-        z_mu, z_sigma = z_mus[:, :z_dim], z_mus[:, z_dim:]
+    def _step(mask, sbelow, d_, zmuv, h_tm1, c_tm1, U,
+              pri_ff_1_W, pri_ff_1_b,
+              pri_ff_2_W, pri_ff_2_b,
+              inf_ff_1_W, inf_ff_1_b,
+              inf_ff_2_W, inf_ff_2_b,
+              aux_ff_1_W, aux_ff_1_b,
+              aux_ff_2_W, aux_ff_2_b,
+              gen_ff_1_W, gen_ff_1_b,
+              gen_ff_2_W, hdrop=None):
+        pri_hid = tensor.dot(h_tm1, pri_ff_1_W) + pri_ff_1_b
+        pri_hid = lrelu(pri_hid)
+        pri_out = tensor.dot(pri_hid, pri_ff_2_W) + pri_ff_2_b
+        z_dim = pri_out.shape[-1] / 2
+        pri_mu, pri_sigma = pri_out[:, :z_dim], pri_out[:, z_dim:]
 
         if d_ is not None:
-            encoder_hidden = lrelu(tensor.dot(concatenate([sbefore, d_], axis=1), inf_w) + inf_b)
-            encoder_mus = tensor.dot(encoder_hidden, inf_mus_w) + inf_mus_b
-            encoder_mu, encoder_sigma = encoder_mus[:, :z_dim], encoder_mus[:, z_dim:]
-            tild_z_t = encoder_mu + g_s * tensor.exp(0.5 * encoder_sigma)
-            log_pz = tensor.sum(log_prob_gaussian(tild_z_t, z_mu, z_sigma), axis=-1)
-            log_qzIx = tensor.sum(log_prob_gaussian(tild_z_t, encoder_mu, encoder_sigma), axis=-1)
-            kld = gaussian_kld(encoder_mu, encoder_sigma, z_mu, z_sigma)
-            kld = tensor.sum(kld, axis=-1)
-            decoder_mus = tensor.dot(tild_z_t, gen_mus_w1) + gen_mus_b1
-            decoder_mus = lrelu(decoder_mus)
-            decoder_mus = tensor.dot(decoder_mus, gen_mus_w2) + gen_mus_b2
-            decoder_mu, decoder_sigma = decoder_mus[:, :d_.shape[1]], decoder_mus[:, d_.shape[1]:]
-            decoder_mu = tensor.tanh(decoder_mu)
-            decoder_mu = T.clip(decoder_mu, -10., 10.)
-            decoder_sigma = T.clip(decoder_sigma, -10., 10.)
+            inf_inp = concatenate([h_tm1, d_], axis=1)
+            inf_hid = tensor.dot(inf_inp, inf_ff_1_W) + inf_ff_1_b
+            inf_hid = lrelu(inf_hid)
+            inf_out = tensor.dot(inf_hid, inf_ff_2_W) + inf_ff_2_b
+            inf_mu, inf_sigma = inf_out[:, :z_dim], inf_out[:, z_dim:]
+            z_smp = inf_mu + zmuv * tensor.exp(0.5 * inf_sigma)
+
+            log_pz = tensor.sum(log_prob_gaussian(z_smp, pri_mu, pri_sigma), axis=-1)
+            log_qz = tensor.sum(log_prob_gaussian(z_smp, inf_mu, inf_sigma), axis=-1)
+            kld_qp = gaussian_kld(inf_mu, inf_sigma, pri_mu, pri_sigma)
+            kld_qp = tensor.sum(kld_qp, axis=-1)
+
+            aux_hid = tensor.dot(z_smp, aux_ff_1_W) + aux_ff_1_b
+            aux_hid = lrelu(aux_hid)
+            aux_out = tensor.dot(aux_hid, aux_ff_2_W) + aux_ff_2_b
+            aux_out = T.clip(aux_out, -10., 10.)
+            aux_mu, aux_sigma = aux_out[:, :d_.shape[1]], aux_out[:, d_.shape[1]:]
+            aux_mu = tensor.tanh(aux_mu)
             disc_d_ = theano.gradient.disconnected_grad(d_)
-            recon_cost = -log_prob_gaussian(disc_d_, decoder_mu, decoder_sigma)
-            recon_cost = tensor.sum(recon_cost, axis=-1)
+            aux_cost = -log_prob_gaussian(disc_d_, aux_mu, aux_sigma)
+            aux_cost = tensor.sum(aux_cost, axis=-1)
         else:
             if provide_z:
                 print("Zs were provided!")
-                tild_z_t = g_s
+                z_smp = zmuv
             else:
-                tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_sigma)
+                z_smp = z_mu + zmuv * tensor.exp(0.5 * z_sigma)
 
-            kld = tensor.sum(tild_z_t, axis=-1) * 0.
-            recon_cost = tensor.sum(tild_z_t, axis=-1) * 0.
-            log_pz = kld * 0.
-            log_qzIx = kld * 0.
+            kld_qp = tensor.sum(z_smp, axis=-1) * 0.
+            aux_cost = tensor.sum(z_smp, axis=-1) * 0.
+            log_pz = kld_qp * 0.
+            log_qz = kld_qp * 0.
 
         # recurrent dropout
         if hdrop is not None:
-            print('Using dropout.... !!!!')
-            sbefore = sbefore * hdrop
+            h_tm1 = h_tm1 * hdrop
 
-        z = tild_z_t
-        preact = tensor.dot(sbefore, param('U')) + tensor.dot(z, W_cond)
-        preact += sbelow
-        preact += param('b')
+        gen_hid = tensor.dot(z_smp, gen_ff_1_W) + gen_ff_1_b
+        gen_hid = lrelu(gen_hid)
+        gen_out = tensor.dot(gen_hid, gen_ff_2_W)
 
-        i = tensor.nnet.sigmoid(_slice(preact, 0, dim))
-        f = tensor.nnet.sigmoid(_slice(preact, 1, dim))
-        o = tensor.nnet.sigmoid(_slice(preact, 2, dim))
-        c = tensor.tanh(_slice(preact, 3, dim))
+        preact = tensor.dot(h_tm1, U) + sbelow
+        preact += gen_out
+        i = tensor.nnet.sigmoid(_slice(preact, 0, options['dim']))
+        f = tensor.nnet.sigmoid(_slice(preact, 1, options['dim']))
+        o = tensor.nnet.sigmoid(_slice(preact, 2, options['dim']))
+        c = tensor.tanh(_slice(preact, 3, options['dim']))
 
-        c = f * cell_before + i * c
-        c = mask * c + (1. - mask) * cell_before
+        c = f * c_tm1 + i * c
+        c = mask * c + (1. - mask) * c_tm1
         h = o * tensor.tanh(c)
-        h = mask * h + (1. - mask) * sbefore
-        return h, c, z, log_pz, log_qzIx, kld, recon_cost
+        h = mask * h + (1. - mask) * h_tm1
+        return h, c, z_smp, log_pz, log_qz, kld_qp, aux_cost
 
     lstm_state_below = tensor.dot(state_below, param('W')) + param('b')
     if state_below.ndim == 3:
@@ -510,9 +517,11 @@ def latent_lstm_layer(
                 mask.shape[0], mask.shape[1]*mask.shape[2])).dimshuffle(0, 1, 'x')
         elif mask.ndim == 2:
             mask = mask.dimshuffle(0, 1, 'x')
+        #
         trng = RandomStreams(seed)
         hdrop = trng.binomial(
-            (lstm_state_below.shape[1], options['dim']), p=0.85, n=1,
+            (lstm_state_below.shape[1], options['dim']),
+            p=(1 - options['dropout']), n=1,
             dtype=theano.config.floatX)
         hdrop = is_train * hdrop + (1 - is_train) * tensor.ones_like(hdrop)
         non_seqs.append(hdrop)
@@ -527,24 +536,19 @@ def latent_lstm_layer(
 # initialize all parameters
 def init_params(options):
     params = OrderedDict()
+    # forward stochastic LSTM
     params = get_layer('latent_lstm')[0](
         options, params, prefix='encoder',
         nin=options['dim_proj'], dim=options['dim'])
     params = get_layer('ff')[0](
-        options, params, prefix='ff_in_lstm',
-        nin=options['dim_input'], nout=options['dim_proj'],
-        ortho=True)
+            options, params, prefix='ff_in_lstm',
+            nin=options['dim_input'], nout=options['dim_proj'],
+            ortho=True)
     params = get_layer('ff')[0](
-        options, params, prefix='ff_out_mus',
-        nin=options['dim'], nout=options['dim_input'],
-        ortho=True)
-    U = numpy.concatenate([
-        norm_weight(options['dim_z'], options['dim']),
-        norm_weight(options['dim_z'], options['dim']),
-        norm_weight(options['dim_z'], options['dim']),
-        norm_weight(options['dim_z'], options['dim'])], axis=1)
-    params[_p('z_cond', 'W')] = U
-
+            options, params, prefix='ff_out_mus',
+            nin=options['dim'], nout=options['dim_input'],
+            ortho=True)
+    # backward deterministic LSTM
     params = get_layer(options['encoder'])[0](
         options, params, prefix='encoder_r',
         nin=options['dim_proj'], dim=options['dim'])
@@ -552,27 +556,45 @@ def init_params(options):
         options, params, prefix='ff_out_mus_r',
         nin=options['dim'], nout=options['dim_input'],
         ortho=True)
-    # Prior Network params
-    params = get_layer('ff')[0](options, params, prefix='trans_1',
-                                nin=options['dim'], nout=options['prior_hidden'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='z_mus',
-                                nin=options['prior_hidden'], nout=2 * options['dim_z'],
-                                ortho=False)
-    # Inference network params
-    params = get_layer('ff')[0](options, params, prefix='inf',
-                                nin=2 * options['dim'], nout=options['encoder_hidden'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='inf_mus',
-                                nin=options['encoder_hidden'], nout=2 * options['dim_z'],
-                                ortho=False)
-    # Generative Network params
-    params = get_layer('ff')[0](options, params, prefix='gen_mus1',
-                                nin=options['dim_z'], nout=options['dim'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='gen_mus2',
-                                nin=options['dim'], nout=2 * options['dim'],
-                                ortho=False)
+    # prior params
+    params = get_layer('ff')[0](
+            options, params, prefix='pri_ff_1',
+            nin=options['dim'], nout=options['dim_mlp'],
+            ortho=True)
+    params = get_layer('ff')[0](
+            options, params, prefix='pri_ff_2',
+            nin=options['dim_mlp'], nout=2 * options['dim_z'],
+            ortho=True)
+    # posterior params
+    params = get_layer('ff')[0](
+            options, params, prefix='inf_ff_1',
+            nin=2 * options['dim'], nout=options['dim_mlp'],
+            ortho=True)
+    params = get_layer('ff')[0](
+            options, params, prefix='inf_ff_2',
+            nin=options['dim_mlp'], nout=2 * options['dim_z'],
+            ortho=True)
+    # aux network params
+    params = get_layer('ff')[0](
+            options, params, prefix='aux_ff_1',
+            nin=options['dim_z'], nout=options['dim_mlp'],
+            ortho=True)
+    params = get_layer('ff')[0](
+            options, params, prefix='aux_ff_2',
+            nin=options['dim_mlp'], nout=2 * options['dim'],
+            ortho=True)
+    # gen params
+    params = get_layer('ff')[0](
+            options, params, prefix='gen_ff_1',
+            nin=options['dim_z'], nout=options['dim_mlp'],
+            ortho=True)
+    U = numpy.concatenate([
+        norm_weight(options['dim_mlp'], options['dim']),
+        norm_weight(options['dim_mlp'], options['dim']),
+        norm_weight(options['dim_mlp'], options['dim']),
+        norm_weight(options['dim_mlp'], options['dim'])],
+        axis=1)
+    params[_p('gen_ff_2', 'W')] = U
     return params
 
 
@@ -618,7 +640,14 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
        prefix='encoder', mask=x_mask, gaussian_s=zmuv,
        back_states=states_rev)
 
-    states_gen, memories_gen, z, log_pz, log_qzIx, kld, rec_cost_rev = rvals[0], rvals[1], rvals[2], rvals[3], rvals[4], rvals[5], rvals[6]
+    states_gen, memories_gen, z, log_pz, log_qzIx, kld, rec_cost_rev = (
+            rvals[0], rvals[1], rvals[2], rvals[3], rvals[4], rvals[5], rvals[6])
+    trng = RandomStreams(seed)
+    odrop = trng.binomial(
+            states_gen.shape, p=(1 - options['dropout']), n=1,
+            dtype=theano.config.floatX)
+    odrop = is_train * odrop + (1 - is_train) * tensor.ones_like(odrop)
+    states_gen = states_gen * odrop
     out_logits = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_mus', activ='linear')
     out_probs = masked_softmax(out_logits, axis=-1)
 
@@ -834,15 +863,14 @@ def train(dim_input=200,  # input vector dimensionality
           dataset=None,  # Not used
           valid_dataset=None,  # Not used
           dictionary=None,  # Not used
-          use_dropout=False,
+          dropout=0.,
           reload_=False,
           kl_start=0.2,
           weight_aux=0.,
           kl_rate=0.0003):
 
-    prior_hidden = dim
     dim_z = 100
-    encoder_hidden = dim
+    dim_mlp = dim
     learn_h0 = False
 
     save_path = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
@@ -860,6 +888,8 @@ def train(dim_input=200,  # input vector dimensionality
     pkl.dump(model_options, open(opts, 'wb'))
     log_file = open(desc, 'w')
 
+    print('Options:')
+    print(model_options)
     print('Building model')
     params = init_params(model_options)
     tparams = init_tparams(params)
@@ -980,6 +1010,7 @@ def train(dim_input=200,  # input vector dimensionality
             tr_costs[4].append(elbo_cost_np)
             tr_costs[5].append(nll_rev_cost_np)
             tr_costs[6].append(nll_gen_cost_np)
+            tr_costs = [trc[-dispFreq:] for trc in tr_costs]
             ud = time.time() - ud_start
 
             # verbose
