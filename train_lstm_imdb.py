@@ -45,6 +45,6 @@ if __name__ == '__main__':
         'decay-c': 0.,
         'kl_start': 1.,
         'weight_aux': 0.0005,
-        'dropout': 0.2,
+        'dropout': 0.,
         'learning-rate': 0.001,
         'reload': False})

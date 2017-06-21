@@ -54,7 +54,7 @@ def main():
         sys.exit(0)
 
     from lm_lstm_imdb import init_params, init_tparams, load_params
-    from lm_lstm_imdb import is_train, build_rev_model, build_gen_model, build_sampler, gen_sample
+    from lm_lstm_imdb import is_train, build_rev_model, build_gen_model, build_sampler, gen_sample, beam_sample
     params = init_params(model_options)
     print('Loading model parameters...')
     params = load_params(model_file, params)
@@ -101,6 +101,20 @@ def main():
         batch_z = get_latents(batch[0].T, batch[1].T, batch[2].T, zmuv)
         z1 = batch_z[:, [0], :]
         z2 = batch_z[:, [1], :]
+
+        print("Beam Search")
+        data.print_batch(batch[0][[0]], eos_id=data.eos_id, print_number=False)
+        for i in np.linspace(0, 1, 11):
+            print("{}: ".format(i), end="")
+            z = ((1 - i) * z1) + (i * z2)  # Interpolate latent
+            z = np.repeat(z, 10, axis=1)
+            sample, sample_score = beam_sample(tparams, f_next, model_options,
+                maxlen=20, zmuv=z, unk_id=data.unk_id,
+                eos_id=data.eos_id, bos_id=data.bos_id)
+            sample = [sample[0]]
+            data.print_batch(sample, eos_id=data.eos_id, print_number=False)
+
+        data.print_batch(batch[0][[1]], eos_id=data.eos_id, print_number=False)
 
         # Interpolation
         print("Samples")

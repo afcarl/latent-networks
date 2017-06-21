@@ -706,6 +706,124 @@ def build_sampler(tparams, options, trng, provide_z=False):
     return f_next
 
 
+def beam_sample(tparams, f_next, options, trng=None, maxlen=30,
+                zmuv=None, unk_id=None, eos_id=None, bos_id=None,
+                init_states=None, init_memories=None, beam_size=10):
+    assert bos_id is not None
+    samples = []
+    samples_scores = 0
+    nb_samples = 1
+
+    if zmuv is not None:
+        nb_samples = zmuv.shape[1]
+        zmuv = np.repeat(zmuv, beam_size, axis=1)
+
+    # initial token is indicated by a -1 and initial state is zero
+    next_w = bos_id * numpy.ones((nb_samples,)).astype('int64')
+    next_state = numpy.zeros((nb_samples, options['dim'])).astype('float32')
+    next_memory = numpy.zeros((nb_samples, options['dim'])).astype('float32')
+    next_w = np.repeat(next_w, beam_size, axis=0)
+    next_state = np.repeat(next_state, beam_size, axis=0)
+    next_memory = np.repeat(next_memory, beam_size, axis=0)
+
+
+    assert init_states is None
+    assert init_memories is None
+
+    samples = [[[] for _ in range(beam_size)] for _ in range(nb_samples)]
+    probs = [[0. for _ in range(beam_size)] for _ in range(nb_samples)]
+    completed_beams = [[] for _ in range(nb_samples)]
+    completed_probs = [[] for _ in range(nb_samples)]
+
+    for ii in range(maxlen):
+        if zmuv is None:
+            zmuv_t = numpy.random.normal(
+                loc=0.0, scale=1.0,
+                size=(next_w.shape[0], options['dim_z'])).astype('float32')
+        else:
+            if ii >= zmuv.shape[0]:
+                zmuv_t = numpy.random.normal(
+                    loc=0.0, scale=1.0,
+                    size=(next_w.shape[0], options['dim_z'])).astype('float32')
+            else:
+                zmuv_t = zmuv[ii, :, :]
+
+        inps = [next_w, next_state, next_memory, zmuv_t]
+        ret = f_next(*inps)
+        next_p, next_state, next_memory = ret
+
+        next_p[:, 0] = 0.
+        if bos_id is not None:
+            next_p[:, bos_id] = 0.
+        if unk_id is not None:
+            next_p[:, unk_id] = 0.
+        if (eos_id is not None) and ii < 5:
+            next_p[:, eos_id] = 0.
+        next_p = next_p / numpy.sum(next_p, axis=1)[:, None]
+
+        topk_words = numpy.argsort(next_p, axis=-1)[:, ::-1]
+        topk_probs = numpy.log(numpy.sort(next_p, axis=-1)[:, ::-1])
+
+        # build the new beams for each input example
+        all_sources = []
+        all_prev_word = []
+        for i in range(nb_samples):
+            old_beams = samples[i]
+            old_probs = probs[i]
+            new_beams = []
+            new_probs = []
+            new_sources = []
+            # for each beam
+            for j in range(beam_size):
+                # remove duplicate words, these can happen due to the pointer softmax
+                # e.g. if the word appears twice in the document.
+                added_words = set()
+                k = 0
+                while len(new_beams) < beam_size:
+                    candidate = topk_words[i * beam_size + j, k]
+                    assert candidate != unk_id
+                    if candidate not in added_words:
+                        if candidate == eos_id:
+                            completed_beams[i].append(old_beams[j] + [candidate])
+                            completed_probs[i].append(old_probs[j] + topk_probs[i * beam_size + j, k])
+                            completed_probs[i][-1] /= len(completed_beams[i][-1])
+                        else:
+                            new_beams.append(old_beams[j] + [candidate])
+                            new_probs.append(old_probs[j] + topk_probs[i * beam_size + j, k])
+                            new_sources.append(i * beam_size + j)
+                        added_words.add(candidate)
+                    k += 1
+
+            # compare all beams for this particular example between them
+            best_beams = sorted(zip(new_beams, new_probs, new_sources), key=lambda x: x[1], reverse=True)
+            bb, bp, bs = zip(*best_beams)
+            samples[i] = bb[:beam_size]
+            probs[i] = bp[:beam_size]
+
+            # keep track of which line the selected beam originates from
+            all_sources.extend(bs[:beam_size])
+            all_prev_word.extend([s[-1] for s in samples[i]])
+
+        next_state = next_state[all_sources]
+        next_memory = next_memory[all_sources]
+        next_w = numpy.array(all_prev_word).astype('int64')
+
+    # at the end of sampling steps
+    for i in range(nb_samples):
+        for j in range(beam_size):
+            completed_beams[i].append(samples[i][j])
+            completed_probs[i].append(probs[i][j] / len(samples[i][j]))
+    # order generated candidates by their log-probability
+    # and return the top-scoring candidate for each input example
+    best_samples = []
+    best_scores = []
+    for i in range(nb_samples):
+        bsp = sorted(zip(completed_beams[i], completed_probs[i]), key=lambda x: x[1], reverse=True)
+        best_samples.append(bsp[0][0])
+        best_scores.append(bsp[0][1])
+    return best_samples, best_scores
+
+
 # generate sample
 def gen_sample(tparams, f_next, options, trng=None, maxlen=30,
                argmax=False, kickstart=None, zmuv=None,
@@ -874,7 +992,7 @@ def train(dim_input=200,  # input vector dimensionality
     learn_h0 = False
 
     save_path = saveto + 'seed_' + str(seed) + '_model_' + str(weight_aux) + '_weight_aux_' + \
-        str(kl_start) + '_kl_Start_' + str(kl_rate) + '_kl_rate'
+            str(kl_start) + '_kl_Start_' + str(kl_rate) + '_kl_rate_' + str(dropout) + '_do'
     desc = save_path + '_log.txt'
     opts = save_path + '_opts.pkl'
     pars = save_path + '_pars.npz'
