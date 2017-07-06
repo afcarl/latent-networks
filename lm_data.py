@@ -543,7 +543,7 @@ class IMDB_JMARS():
         x = batch[:, :-1]
         y = batch[:, 1:]
         m = np.not_equal(y, self.pad_id).astype('float32')
-        return x, m
+        return x, y, m
 
     def batch2text(self, batch, eos_id=None):
         sentences = []
