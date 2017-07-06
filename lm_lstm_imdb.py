@@ -931,7 +931,7 @@ def pred_probs(f_log_probs, f_iwae_eval, options, data, source='valid'):
         nbatches += 1
 
     data_iterator = get_data(data, source)
-    for idx in tqdm(range(nbatches), ncols=80, ascii=True):
+    for idx in range(nbatches):
         x, y, x_mask = next(data_iterator)
         x = x.transpose(1, 0)
         y = y.transpose(1, 0)
