@@ -984,7 +984,6 @@ def train(dim_input=200,  # input vector dimensionality
           max_epochs=100,
           finish_after=10000000,  # finish after this many updates
           dispFreq=100,
-          decay_c=0.,  # L2 weight decay penalty
           lrate=0.0002,
           maxlen=100,  # maximum length of the description
           optimizer='adam',
@@ -1050,7 +1049,8 @@ def train(dim_input=200,  # input vector dimensionality
     vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f).mean()
     elbo_cost = ELBOcost(nll_gen, kld, kld_weight=1.).mean()
     aux_cost = (numpy.float32(weight_aux) * (rec_cost_rev + nll_rev)).mean()
-    tot_cost = (vae_cost + aux_cost)
+    reg_cost = 1e-6 * tensor.sum([tensor.sum(p ** 2) for p in tparams.values()])
+    tot_cost = vae_cost + aux_cost + reg_cost
     nll_gen_cost = nll_gen.mean()
     nll_rev_cost = nll_rev.mean()
     kld_cost = kld.mean()
