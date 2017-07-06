@@ -30,6 +30,35 @@ numpy.random.seed(seed)
 is_train = tensor.scalar('is_train')
 
 
+def param_init_nflayer(options, params, prefix='nf', nz=None):
+    params[_p(prefix, 'u')] = norm_weight(nz, 1, scale=0.01)
+    params[_p(prefix, 'w')] = norm_weight(nz, 1, scale=0.01)
+    params[_p(prefix, 'b')] = numpy.zeros((1,)).astype('float32')
+    return params
+
+
+def nflayer(tparams, state_below, options, prefix='nf', **kwargs):
+    # 1) calculate u_hat to ensure invertibility (appendix A.1 to)
+    # 2) calculate the forward transformation of the input f(z) (Eq. 8)
+    # 3) calculate u_hat^T psi(z) 
+    # 4) calculate logdet-jacobian log|1 + u_hat^T psi(z)| to be used in the LL function
+    z = state_below
+    u = tparams[_p(prefix, 'u')].flatten()
+    w = tparams[_p(prefix, 'w')].flatten()
+    b = tparams[_p(prefix, 'b')]
+    # z is (batch_size, num_latent_units)
+    uw = tensor.dot(u, w)
+    muw = -1 + tensor.nnet.softplus(uw) # = -1 + T.log(1 + T.exp(uw))
+    u_hat = u + (muw - uw) * tensor.transpose(w) / tensor.sum(w ** 2)
+    zwb = tensor.dot(z, w) + b[0]
+    f_z = z + u_hat.dimshuffle('x', 0) * tensor.tanh(zwb).dimshuffle(0, 'x')
+    # tanh(x)dx = 1 - tanh(x)**2
+    psi = tensor.dot((1 - tensor.tanh(zwb) ** 2).dimshuffle(0, 'x'), w.dimshuffle('x', 0))
+    psi_u = T.dot(psi, u_hat)
+    logdet_jacobian = T.log(T.abs_(1 + psi_u))
+    return [f_z, logdet_jacobian]
+
+
 def masked_softmax(x, axis=-1, mask=None):
     if mask is not None:
         x = (mask * x) + (1 - mask) * (-10)
@@ -150,6 +179,7 @@ def save_params(path, tparams):
 # layers: 'name': ('parameter initializer', 'feedforward')
 layers = {
     'ff': ('param_init_fflayer', 'fflayer'),
+    'nf': ('param_init_nflayer', 'nflayer'),
     'gru': ('param_init_gru', 'gru_layer'),
     'lstm': ('param_init_lstm', 'lstm_layer'),
     'hsoftmax': ('param_init_hsoftmax', 'hsoftmax_layer'),
@@ -433,6 +463,16 @@ def latent_lstm_layer(
             return _x[:, :, n * dim:(n + 1) * dim]
         return _x[:, n * dim:(n + 1) * dim]
 
+    def _apply_nf(z0):
+        zi = z0
+        log_det_sum = 0.
+        for i in range(options['num_nf_layers']):
+            zi, log_det = get_layer('nf')[1](
+                tparams, zi, options,
+                prefix='inf_nf_%d' % i)
+            log_det_sum += log_det
+        return zi, log_det_sum
+
     def _step(mask, sbelow, d_, zmuv, h_tm1, c_tm1, U,
               pri_ff_1_W, pri_ff_1_b,
               pri_ff_2_W, pri_ff_2_b,
@@ -441,7 +481,7 @@ def latent_lstm_layer(
               aux_ff_1_W, aux_ff_1_b,
               aux_ff_2_W, aux_ff_2_b,
               gen_ff_1_W, gen_ff_1_b,
-              gen_ff_2_W, hdrop=None):
+              gen_ff_2_W):
         pri_hid = tensor.dot(h_tm1, pri_ff_1_W) + pri_ff_1_b
         pri_hid = lrelu(pri_hid)
         pri_out = tensor.dot(pri_hid, pri_ff_2_W) + pri_ff_2_b
@@ -455,11 +495,14 @@ def latent_lstm_layer(
             inf_out = tensor.dot(inf_hid, inf_ff_2_W) + inf_ff_2_b
             inf_mu, inf_sigma = inf_out[:, :z_dim], inf_out[:, z_dim:]
             z_smp = inf_mu + zmuv * tensor.exp(0.5 * inf_sigma)
-
-            log_pz = tensor.sum(log_prob_gaussian(z_smp, pri_mu, pri_sigma), axis=-1)
             log_qz = tensor.sum(log_prob_gaussian(z_smp, inf_mu, inf_sigma), axis=-1)
-            kld_qp = gaussian_kld(inf_mu, inf_sigma, pri_mu, pri_sigma)
-            kld_qp = tensor.sum(kld_qp, axis=-1)
+            
+            if options['num_nf_layers'] > 0:
+                z_smp, log_det_sum = _apply_nf(z_smp)
+                log_qz = log_qz - log_det_sum
+            
+            log_pz = tensor.sum(log_prob_gaussian(z_smp, pri_mu, pri_sigma), axis=-1)
+            kld_qp = log_qz - log_pz
 
             aux_hid = tensor.dot(z_smp, aux_ff_1_W) + aux_ff_1_b
             aux_hid = lrelu(aux_hid)
@@ -477,6 +520,8 @@ def latent_lstm_layer(
                 z_smp = zmuv
             else:
                 z_smp = z_mu + zmuv * tensor.exp(0.5 * z_sigma)
+                if options['use_nf']:
+                    z_smp, _ = _apply_nf(z_smp)
 
             kld_qp = tensor.sum(z_smp, axis=-1) * 0.
             aux_cost = tensor.sum(z_smp, axis=-1) * 0.
@@ -520,7 +565,7 @@ def latent_lstm_layer(
         rval, updates = theano.scan(
             _step, sequences=[mask, lstm_state_below, back_states, gaussian_s],
             outputs_info=[init_state, init_memory, None, None, None, None, None],
-            name=_p(prefix, '_layers'), non_sequences=non_seqs, strict=True, n_steps=nsteps)
+            name=_p(prefix, '_layers'), non_sequences=non_seqs)
     return [rval, updates]
 
 
@@ -557,7 +602,7 @@ def init_params(options):
             nin=options['dim'], nout=options['dim_input'],
             ortho=True)
 
-    # Prior network
+    # prior network
     params = \
         get_layer('ff')[0](
             options, params, prefix='pri_ff_1',
@@ -568,8 +613,7 @@ def init_params(options):
             options, params, prefix='pri_ff_2',
             nin=options['dim_mlp'], nout=2 * options['dim_z'],
             ortho=True)
-
-    # Posterior network
+    # posterior network
     params = \
         get_layer('ff')[0](
             options, params, prefix='inf_ff_1',
@@ -580,7 +624,11 @@ def init_params(options):
             options, params, prefix='inf_ff_2',
             nin=options['dim_mlp'], nout=2 * options['dim_z'],
             ortho=True)
-
+    # n-layer deep nf
+    for i in range(options['num_nf_layers']):
+        params = get_layer('nf')[0](
+                options, params, prefix='inf_nf_%d' % i,
+                nz=options['dim_z'])
     # Auxiliary network
     params = \
         get_layer('ff')[0](
@@ -1006,6 +1054,7 @@ def train(dim_input=200,  # input vector dimensionality
           dropout=0.,
           reload_=False,
           use_iwae=False,
+          num_nf_layers=0,
           kl_start=0.2,
           weight_aux=0.,
           kl_rate=0.0003):
@@ -1014,7 +1063,8 @@ def train(dim_input=200,  # input vector dimensionality
     dim_mlp = dim
     learn_h0 = False
 
-    desc = 'seed{}_aux{}_aux_zh_iwae{}'.format(seed, weight_aux, str(use_iwae))
+    desc = 'seed{}_aux{}_aux_zh_iwae{}_nfl{}'.format(
+        seed, weight_aux, str(use_iwae), str(num_nf_layers))
     logs = '{}/{}_log.txt'.format(log_dir, desc)
     opts = '{}/{}_opts.pkl'.format(model_dir, desc)
     pars = '{}/{}_pars.npz'.format(model_dir, desc)
