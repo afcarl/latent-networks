@@ -496,11 +496,10 @@ def latent_lstm_layer(
             inf_mu, inf_sigma = inf_out[:, :z_dim], inf_out[:, z_dim:]
             z_smp = inf_mu + zmuv * tensor.exp(0.5 * inf_sigma)
             log_qz = tensor.sum(log_prob_gaussian(z_smp, inf_mu, inf_sigma), axis=-1)
-            
             if options['num_nf_layers'] > 0:
                 z_smp, log_det_sum = _apply_nf(z_smp)
                 log_qz = log_qz - log_det_sum
-            
+
             log_pz = tensor.sum(log_prob_gaussian(z_smp, pri_mu, pri_sigma), axis=-1)
             kld_qp = log_qz - log_pz
 

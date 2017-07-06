@@ -229,7 +229,7 @@ def load_imdb_jmars(dir_path=None, max_sentence_len=16, min_sentence_len=5, topk
     [3] Code repository https://github.com/nihalb/JMARS
     '''
     VERSION = 3
-    SPECIAL_TOKENS = ['__pad__', '__go__', '<unk>', '<S>', '</S>']
+    SPECIAL_TOKENS = ['__pad__', '<S>', '</S>', '<unk>']
 
     if dir_path is None:
         dir_path = pjoin(".", "imdb", "data")
@@ -512,9 +512,9 @@ class IMDB_JMARS():
         self.voc_size = len(self.idx2word)  # # of possible words
         self.seq_len = seq_len           # length of input sequences
         self.pad_id = self.word2idx['__pad__']
-        self.unk_id = self.word2idx['<unk>']
         self.bos_id = self.word2idx['<S>']
         self.eos_id = self.word2idx['</S>']
+        self.unk_id = self.word2idx['<unk>']
         self.rng_seed = rng_seed
         self.rng = np.random.RandomState(rng_seed)
 
