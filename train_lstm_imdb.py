@@ -2,6 +2,7 @@
 
 import os
 from lm_lstm_imdb import train
+import argparse
 
 
 def main(job_id, params):
@@ -36,6 +37,10 @@ if __name__ == '__main__':
     except:
         pass
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--weight_aux", type=float, default=0.)
+    args = parser.parse_args()
+
     main(0, {
         'model': './experiments/imdb/',
         'dim_input': -1,  # Determine but the dataset.
@@ -44,7 +49,7 @@ if __name__ == '__main__':
         'optimizer': 'adam',
         'decay-c': 0.,
         'kl_start': 1.,
-        'weight_aux': 0.0005,
+        'weight_aux': args.weight_aux,
         'dropout': 0.,
         'learning-rate': 0.001,
         'reload': False})

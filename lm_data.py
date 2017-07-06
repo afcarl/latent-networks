@@ -488,9 +488,12 @@ class Text8():
 
 
 class IMDB_JMARS():
-    def __init__(self, data_path, seq_len, batch_size, topk=16000, rng_seed=1234):
+    def __init__(self, data_path, seq_len, batch_size,
+                 topk=16000, rng_seed=1234):
         # load ptb word sequence
-        data = load_imdb_jmars(data_path, max_sentence_len=seq_len, min_sentence_len=5, topk=topk)
+        data = load_imdb_jmars(
+            data_path, max_sentence_len=seq_len,
+            min_sentence_len=5, topk=topk)
 
         self.tr_words = data['train']
         self.va_words = data['valid']
@@ -532,13 +535,15 @@ class IMDB_JMARS():
         """
         Add <S> and </S> tokens to each sentence and pad the batch.
         """
-        sentences = [[self.bos_id] + list(s) + [self.eos_id] for s in sentences]
-        batch = self.pad_batch(sentences)
-        # Make tuple
+        def _add_special_symbols(s):
+            return [self.bos_id] + list(s) + [self.eos_id]
+
+        sents = [_add_special_symbols(s) for s in sentences]
+        batch = self.pad_batch(sents)
         x = batch[:, :-1]
         y = batch[:, 1:]
         m = np.not_equal(y, self.pad_id).astype('float32')
-        return x, y, m
+        return x, m
 
     def batch2text(self, batch, eos_id=None):
         sentences = []
@@ -548,11 +553,8 @@ class IMDB_JMARS():
                 sentence.append(self.idx2word[idx])
                 if eos_id == idx:
                     break
-
             sentences.append(" ".join(sentence))
-
         return sentences
-
 
     def print_batch(self, batch, eos_id=None, print_number=True):
         for i, s in enumerate(batch):
@@ -611,7 +613,7 @@ class PTB():
         self.eos_id = self.word2idx['</S>']
         self.batch_size = batch_size
         self.voc_size = len(self.idx2word)  # # of possible words
-        self.seq_len=seq_len           # length of input sequences
+        self.seq_len = seq_len              # length of input sequences
         self.rng_seed = rng_seed
         self.rng = np.random.RandomState(rng_seed)
 
@@ -622,7 +624,8 @@ class PTB():
         source_len = source_seq.shape[0]
         max_start_idx = source_len - seq_len
         # sample the "base" sequences
-        start_idx = self.rng.randint(low=0, high=max_start_idx, size=(seq_count,))
+        start_idx = self.rng.randint(
+            low=0, high=max_start_idx, size=(seq_count,))
         idx_seqs = []
         for i in range(seq_count):
             subseq = source_seq[start_idx[i]:(start_idx[i] + seq_len)]
