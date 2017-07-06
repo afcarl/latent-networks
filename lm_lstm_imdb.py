@@ -25,6 +25,7 @@ profile = False
 seed = 1234
 num_iwae_samps = 25
 num_iwae_iters = 1
+num_iwae_samps_train = 5
 numpy.random.seed(seed)
 is_train = tensor.scalar('is_train')
 
@@ -954,7 +955,11 @@ def pred_probs(f_log_probs, f_iwae_eval, options, data, source='valid'):
         numpy.exp(numpy.array(iwae_rvals).sum() / n_done)
 
 
-# optimizers
+def log_mean_exp(x, axis):
+    m = tensor.max(x, axis=axis, keepdims=True)
+    return m + tensor.log(tensor.mean(tensor.exp(x - m), axis=axis, keepdims=True))
+
+
 # name(hyperp, tparams, grads, inputs (list), cost) = f_grad_shared, f_update
 def adam(lr, tparams, gshared, beta1=0.9, beta2=0.99, e=1e-5):
     updates = []
@@ -989,7 +994,9 @@ def train(dim_input=200,  # input vector dimensionality
           optimizer='adam',
           batch_size=16,
           valid_batch_size=16,
-          saveto='model.npz',
+          data_dir='experiments/data',
+          model_dir='experiments/imdb',
+          log_dir='experiments/imdb',
           validFreq=1000,
           saveFreq=1000,  # save the parameters after every saveFreq updates
           sampleFreq=100,  # generate some samples after every sampleFreq
@@ -998,6 +1005,7 @@ def train(dim_input=200,  # input vector dimensionality
           dictionary=None,  # Not used
           dropout=0.,
           reload_=False,
+          use_iwae=False,
           kl_start=0.2,
           weight_aux=0.,
           kl_rate=0.0003):
@@ -1006,20 +1014,20 @@ def train(dim_input=200,  # input vector dimensionality
     dim_mlp = dim
     learn_h0 = False
 
-    save_path = '{}/seed{}_aux{}_aux_zh'.format(saveto, seed, weight_aux)
-    desc = save_path + '_log.txt'
-    opts = save_path + '_opts.pkl'
-    pars = save_path + '_pars.npz'
+    desc = 'seed{}_aux{}_aux_zh_iwae{}'.format(seed, weight_aux, str(use_iwae))
+    logs = '{}/{}_log.txt'.format(log_dir, desc)
+    opts = '{}/{}_opts.pkl'.format(model_dir, desc)
+    pars = '{}/{}_pars.npz'.format(model_dir, desc)
     print(desc)
 
-    data = IMDB_JMARS("./experiments/data", seq_len=16,
+    data = IMDB_JMARS(data_dir, seq_len=16,
                       batch_size=batch_size, topk=16000)
     dim_input = data.voc_size
 
     # Model options
     model_options = locals().copy()
     pkl.dump(model_options, open(opts, 'wb'))
-    log_file = open(desc, 'w')
+    log_file = open(logs, 'w')
 
     print('Options:')
     print(model_options)
@@ -1046,8 +1054,19 @@ def train(dim_input=200,  # input vector dimensionality
         log_pxIz, log_pz, log_qzIx, z, _ = \
         build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
-    vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f).mean()
-    elbo_cost = ELBOcost(nll_gen, kld, kld_weight=1.).mean()
+    if model_options['use_iwae']:
+        log_ws = log_pxIz - log_qzIx + log_pz
+        log_ws_matrix = log_ws.reshape((x.shape[1] / num_iwae_samps_train, num_iwae_samps_train))
+        log_ws_minus_max = log_ws_matrix - tensor.max(log_ws_matrix, axis=1, keepdims=True)
+        ws = tensor.exp(log_ws_minus_max)
+        ws_norm = ws / T.sum(ws, axis=1, keepdims=True)
+        ws_norm = theano.gradient.disconnected_grad(ws_norm)
+        vae_cost = -tensor.sum(log_ws_matrix * ws_norm, axis=1).mean() + 0. * weight_f
+        elbo_cost = -log_mean_exp(log_ws_matrix, axis=1).mean()
+    else:
+        vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f).mean()
+        elbo_cost = ELBOcost(nll_gen, kld, kld_weight=1.).mean()
+
     aux_cost = (numpy.float32(weight_aux) * (rec_cost_rev + nll_rev)).mean()
     reg_cost = 1e-6 * tensor.sum([tensor.sum(p ** 2) for p in tparams.values()])
     tot_cost = vae_cost + aux_cost + reg_cost
@@ -1082,7 +1101,8 @@ def train(dim_input=200,  # input vector dimensionality
                    for k, p in tparams.iteritems()]
     all_gsup = [(gs, g) for gs, g in zip(all_gshared, all_grads)]
     # forward pass + gradients
-    outputs = [vae_cost, aux_cost, tot_cost, kld_cost, elbo_cost, nll_rev_cost, nll_gen_cost, non_finite]
+    outputs = [vae_cost, aux_cost, tot_cost, kld_cost,
+               elbo_cost, nll_rev_cost, nll_gen_cost, non_finite]
     print('Fprop')
     f_prop = theano.function(
         inps, outputs, updates=all_gsup,
@@ -1113,12 +1133,19 @@ def train(dim_input=200,  # input vector dimensionality
         tr_costs = [[], [], [], [], [], [], []]
 
         for x, y, x_mask in data.get_train_batch():
+            n_samples += x.shape[1]
+
+            # Repeat if we're using IWAE
+            if model_options['use_iwae']:
+                x = numpy.repeat(x, num_iwae_samps_train, axis=0)
+                y = numpy.repeat(y, num_iwae_samps_train, axis=0)
+                x_mask = numpy.repeat(x_mask, num_iwae_samps_train, axis=0)
+
             # Transpose data to have the time steps on dimension 0.
             x = x.transpose(1, 0).astype('int32')
             y = y.transpose(1, 0).astype('int32')
             x_mask = x_mask.transpose(1, 0).astype('float32')
 
-            n_samples += x.shape[1]
             uidx += 1
             if kl_start < 1.:
                 kl_start += kl_rate
