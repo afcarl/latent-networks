@@ -11,7 +11,6 @@ from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from lm_data import IMDB_JMARS
 
 import cPickle as pkl
-import ipdb
 import numpy
 import copy
 from costs import iwae_multi_eval
@@ -494,8 +493,11 @@ def latent_lstm_layer(
             inf_hid = lrelu(inf_hid)
             inf_out = tensor.dot(inf_hid, inf_ff_2_W) + inf_ff_2_b
             inf_mu, inf_sigma = inf_out[:, :z_dim], inf_out[:, z_dim:]
+            # first sample z ~ q(z|x)
             z_smp = inf_mu + zmuv * tensor.exp(0.5 * inf_sigma)
             log_qz = tensor.sum(log_prob_gaussian(z_smp, inf_mu, inf_sigma), axis=-1)
+            
+            # pass through normalizing flows
             if options['num_nf_layers'] > 0:
                 z_smp, log_det_sum = _apply_nf(z_smp)
                 log_qz = log_qz - log_det_sum
@@ -508,6 +510,7 @@ def latent_lstm_layer(
             aux_hid = tensor.concatenate([aux_hid, h_tm1], axis=1)
             aux_out = tensor.dot(aux_hid, aux_ff_2_W) + aux_ff_2_b
             aux_out = T.clip(aux_out, -10., 10.)
+
             aux_mu, aux_sigma = aux_out[:, :d_.shape[1]], aux_out[:, d_.shape[1]:]
             aux_mu = tensor.tanh(aux_mu)
             disc_d_ = theano.gradient.disconnected_grad(d_)
@@ -519,6 +522,7 @@ def latent_lstm_layer(
                 z_smp = zmuv
             else:
                 z_smp = z_mu + zmuv * tensor.exp(0.5 * z_sigma)
+
                 if options['use_nf']:
                     z_smp, _ = _apply_nf(z_smp)
 
@@ -527,12 +531,12 @@ def latent_lstm_layer(
             log_pz = kld_qp * 0.
             log_qz = kld_qp * 0.
 
+        # transform z
         gen_hid = tensor.dot(z_smp, gen_ff_1_W) + gen_ff_1_b
         gen_hid = lrelu(gen_hid)
         gen_out = tensor.dot(gen_hid, gen_ff_2_W)
+        preact = tensor.dot(h_tm1, U) + sbelow + gen_out
 
-        preact = tensor.dot(h_tm1, U) + sbelow
-        preact += gen_out
         i = tensor.nnet.sigmoid(_slice(preact, 0, options['dim']))
         f = tensor.nnet.sigmoid(_slice(preact, 1, options['dim']))
         o = tensor.nnet.sigmoid(_slice(preact, 2, options['dim']))
@@ -973,20 +977,18 @@ def pred_probs(f_log_probs, f_iwae_eval, options, data, source='valid'):
         else:
             return data.get_test_batch()
 
-    nbatches = 0
-    for batch in get_data(data, source):
-        nbatches += 1
-
     data_iterator = get_data(data, source)
-    for idx in range(nbatches):
-        x, y, x_mask = next(data_iterator)
+    for (x, y, x_mask) in data_iterator:
         x = x.transpose(1, 0)
         y = y.transpose(1, 0)
         x_mask = x_mask.transpose(1, 0)
         n_done += numpy.sum(x_mask)
+        n_steps = x.shape[0]
+        n_samps = x.shape[1]
         zmuv = numpy.random.normal(
             loc=0.0, scale=1.0,
-            size=(x.shape[0], x.shape[1], options['dim_z'])).astype('float32')
+            size=(n_steps, n_samps, options['dim_z']))
+        zmuv = zmuv.astype('float32')
         elbo = f_log_probs(x, y, x_mask, zmuv)
         for val in elbo:
             rvals.append(val)
@@ -1182,8 +1184,6 @@ def train(dim_input=200,  # input vector dimensionality
         tr_costs = [[], [], [], [], [], [], []]
 
         for x, y, x_mask in data.get_train_batch():
-            n_samples += x.shape[1]
-
             # Repeat if we're using IWAE
             if model_options['use_iwae']:
                 x = numpy.repeat(x, num_iwae_samps_train, axis=0)
@@ -1194,6 +1194,8 @@ def train(dim_input=200,  # input vector dimensionality
             x = x.transpose(1, 0).astype('int32')
             y = y.transpose(1, 0).astype('int32')
             x_mask = x_mask.transpose(1, 0).astype('float32')
+            n_steps = x.shape[0]
+            n_samps = x.shape[1]
 
             uidx += 1
             if kl_start < 1.:
@@ -1202,7 +1204,7 @@ def train(dim_input=200,  # input vector dimensionality
             ud_start = time.time()
             # compute cost, grads and copy grads to shared variables
             zmuv = numpy.random.normal(loc=0.0, scale=1.0, size=(
-                x.shape[0], x.shape[1], model_options['dim_z'])).astype('float32')
+                n_steps, n_samps, model_options['dim_z'])).astype('float32')
             vae_cost_np, aux_cost_np, tot_cost_np, kld_cost_np, \
                 elbo_cost_np, nll_rev_cost_np, nll_gen_cost_np, not_finite_np = \
                 f_prop(x, y, x_mask, zmuv, np.float32(kl_start))

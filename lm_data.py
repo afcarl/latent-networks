@@ -408,8 +408,8 @@ class Text8():
         print('voc_size: {}'.format(len(self.idx2word)))
 
         self.batch_size = batch_size
-        self.voc_size = len(self.idx2word)  # # of possible words
-        self.seq_len=seq_len           # length of input sequences
+        self.voc_size = len(self.idx2word)       # # of possible words
+        self.seq_len = seq_len                   # length of input sequences
         self.pad_id = self.word2idx['__pad__']
         self.rng_seed = rng_seed
         self.rng = np.random.RandomState(rng_seed)
@@ -509,12 +509,13 @@ class IMDB_JMARS():
         print('voc_size: {}'.format(len(self.idx2word)))
 
         self.batch_size = batch_size
-        self.voc_size = len(self.idx2word)  # # of possible words
-        self.seq_len = seq_len           # length of input sequences
-        self.pad_id = self.word2idx['__pad__']
-        self.bos_id = self.word2idx['<S>']
-        self.eos_id = self.word2idx['</S>']
-        self.unk_id = self.word2idx['<unk>']
+        self.voc_size = len(self.idx2word)      # # of possible words
+        self.seq_len = seq_len                  # length of input sequences
+        self.pad_id = self.word2idx['__pad__']  # pad token
+        self.bos_id = self.word2idx['<S>']      # beginning of sentence
+        self.eos_id = self.word2idx['</S>']     # end of sentence
+        self.unk_id = self.word2idx['<unk>']    # unk token
+        assert self.pad_id == 0
         self.rng_seed = rng_seed
         self.rng = np.random.RandomState(rng_seed)
 
