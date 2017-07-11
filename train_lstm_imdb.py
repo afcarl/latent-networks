@@ -19,6 +19,7 @@ def main(job_id, params):
         dim_proj=params['dim_proj'],
         weight_aux=params['weight_aux'],
         use_iwae=params['use_iwae'],
+        use_h_in_aux=params['use_h_in_aux'],
         num_nf_layers=params['num_nf_layers'],
         batch_size=32,
         valid_batch_size=32,
@@ -43,6 +44,7 @@ if __name__ == '__main__':
     #
     parser.add_argument('--weight_aux', type=float, default=0.)
     parser.add_argument('--use_iwae', action='store_true')
+    parser.add_argument('--use_h_in_aux', action='store_true')
     parser.add_argument('--num_nf_layers', type=int, default=0)
     args = parser.parse_args()
 
@@ -53,6 +55,7 @@ if __name__ == '__main__':
         'use_iwae': args.use_iwae,
         'num_nf_layers': args.num_nf_layers,
         'weight_aux': args.weight_aux,
+        'use_h_in_aux': args.use_h_in_aux,
         'dim_input': -1,
         'dim': 500,
         'dim_proj': 300,

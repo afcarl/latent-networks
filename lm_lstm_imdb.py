@@ -507,7 +507,9 @@ def latent_lstm_layer(
 
             aux_hid = tensor.dot(z_smp, aux_ff_1_W) + aux_ff_1_b
             aux_hid = lrelu(aux_hid)
-            aux_hid = tensor.concatenate([aux_hid, h_tm1], axis=1)
+            # concatenate with forward state
+            if options['use_h_in_aux']:
+                aux_hid = tensor.concatenate([aux_hid, h_tm1], axis=1)
             aux_out = tensor.dot(aux_hid, aux_ff_2_W) + aux_ff_2_b
             aux_out = T.clip(aux_out, -10., 10.)
 
@@ -638,10 +640,14 @@ def init_params(options):
             options, params, prefix='aux_ff_1',
             nin=options['dim_z'], nout=options['dim_mlp'],
             ortho=True)
+    if options['use_h_in_aux']:
+        dim_aux = options['dim_mlp'] + options['dim']
+    else:
+        dim_aux = options['dim']
     params = \
         get_layer('ff')[0](
             options, params, prefix='aux_ff_2',
-            nin=(options['dim_mlp'] + options['dim']),
+            nin=dim_aux,
             nout=2 * options['dim'],
             ortho=True)
 
@@ -1055,6 +1061,7 @@ def train(dim_input=200,  # input vector dimensionality
           dropout=0.,
           reload_=False,
           use_iwae=False,
+          use_h_in_aux=False,
           num_nf_layers=0,
           kl_start=0.2,
           weight_aux=0.,
@@ -1064,8 +1071,9 @@ def train(dim_input=200,  # input vector dimensionality
     dim_mlp = dim
     learn_h0 = False
 
-    desc = 'seed{}_aux{}_aux_zh_iwae{}_nfl{}'.format(
-        seed, weight_aux, str(use_iwae), str(num_nf_layers))
+    desc = 'seed{}_aux{}_aux_zh{}_iwae{}_nfl{}'.format(
+        seed, weight_aux, str(use_h_in_aux), str(use_iwae),
+        str(num_nf_layers))
     logs = '{}/{}_log.txt'.format(log_dir, desc)
     opts = '{}/{}_opts.pkl'.format(model_dir, desc)
     pars = '{}/{}_pars.npz'.format(model_dir, desc)
@@ -1177,6 +1185,12 @@ def train(dim_input=200,  # input vector dimensionality
     kl_rate = model_options['kl_rate']
     old_valid_err = 99999
 
+    # count minibatches in one epoch
+    num_train_batches = 0.
+    for x, y, x_mask in data.get_train_batch():
+        num_train_batches += 1.
+    num_total_batches = num_train_batches * max_epochs
+
     # epochs loop
     for eidx in range(max_epochs):
         print("Epoch: {}".format(eidx))
@@ -1227,6 +1241,7 @@ def train(dim_input=200,  # input vector dimensionality
 
             # verbose
             if numpy.mod(uidx, dispFreq) == 0:
+                print('PROGRESS: 00.00%')
                 str1 = 'Epoch {:d}  Update {:d}  VaeCost {:.2f}  AuxCost {:.2f}  KldCost {:.2f}  TotCost {:.2f}  ElboCost {:.2f}  NllRev {:.2f}  NllGen {:.2f}  KL_start {:.2f}'.format(
                     eidx, uidx, np.mean(tr_costs[0]), np.mean(tr_costs[1]), np.mean(tr_costs[3]),
                     np.mean(tr_costs[2]), np.mean(tr_costs[4]), np.mean(tr_costs[5]), np.mean(tr_costs[6]),
