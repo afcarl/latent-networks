@@ -39,7 +39,7 @@ def param_init_nflayer(options, params, prefix='nf', nz=None):
 def nflayer(tparams, state_below, options, prefix='nf', **kwargs):
     # 1) calculate u_hat to ensure invertibility (appendix A.1 to)
     # 2) calculate the forward transformation of the input f(z) (Eq. 8)
-    # 3) calculate u_hat^T psi(z) 
+    # 3) calculate u_hat^T psi(z)
     # 4) calculate logdet-jacobian log|1 + u_hat^T psi(z)| to be used in the LL function
     z = state_below
     u = tparams[_p(prefix, 'u')].flatten()
@@ -496,7 +496,7 @@ def latent_lstm_layer(
             # first sample z ~ q(z|x)
             z_smp = inf_mu + zmuv * tensor.exp(0.5 * inf_sigma)
             log_qz = tensor.sum(log_prob_gaussian(z_smp, inf_mu, inf_sigma), axis=-1)
-            
+
             # pass through normalizing flows
             if options['num_nf_layers'] > 0:
                 z_smp, log_det_sum = _apply_nf(z_smp)
@@ -1041,7 +1041,7 @@ def train(dim_input=200,  # input vector dimensionality
           dim_proj=600,  # the number of GRU units
           encoder='lstm',
           patience=10,  # early stopping patience
-          max_epochs=100,
+          max_epochs=10,
           finish_after=10000000,  # finish after this many updates
           dispFreq=100,
           lrate=0.0002,
@@ -1086,12 +1086,15 @@ def train(dim_input=200,  # input vector dimensionality
     # Model options
     model_options = locals().copy()
     pkl.dump(model_options, open(opts, 'wb'))
-    log_file = open(logs, 'w')
 
     print('Options:')
     print(model_options)
     print('Building model')
     params = init_params(model_options)
+    # load model
+    if os.path.exists(pars):
+        print("Reloading model from {}".format(pars))
+        params = load_params(pars, params)
     tparams = init_tparams(params)
 
     x = tensor.lmatrix('x')
@@ -1172,8 +1175,6 @@ def train(dim_input=200,  # input vector dimensionality
     print('Optimization')
     history_errs = []
     # reload history
-    if reload_ and os.path.exists(saveto):
-        history_errs = list(numpy.load(saveto)['history_errs'])
     best_p = None
     bad_count = 0
 
@@ -1184,6 +1185,13 @@ def train(dim_input=200,  # input vector dimensionality
     kl_start = model_options['kl_start']
     kl_rate = model_options['kl_rate']
     old_valid_err = 99999
+
+    # append to logs
+    if os.path.exists(logs):
+        print("Appending to {}".format(logs))
+        log_file = open(logs, 'a')
+    else:
+        log_file = open(logs, 'w')
 
     # count minibatches in one epoch
     num_train_batches = 0.
