@@ -1041,7 +1041,11 @@ def train(dim_input=200,  # input vector dimensionality
           dim_proj=600,  # the number of GRU units
           encoder='lstm',
           patience=10,  # early stopping patience
+<<<<<<< HEAD
           max_epochs=10,
+=======
+          max_epochs=15,
+>>>>>>> 3bfc2746235388ff5978fd55f283af185c18d8e2
           finish_after=10000000,  # finish after this many updates
           dispFreq=100,
           lrate=0.0002,
