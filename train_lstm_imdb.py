@@ -46,6 +46,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_iwae', action='store_true')
     parser.add_argument('--use_h_in_aux', action='store_true')
     parser.add_argument('--num_nf_layers', type=int, default=0)
+    parser.add_argument('--dropout', type=float, default=0.2)
     args = parser.parse_args()
 
     main(0, {
@@ -61,7 +62,7 @@ if __name__ == '__main__':
         'dim_proj': 300,
         'optimizer': 'adam',
         'kl_start': 1.,
-        'dropout': 0.,
+        'dropout': args.dropout,
         'learning-rate': 0.001,
         'reload': False
     })

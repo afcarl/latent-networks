@@ -12,7 +12,7 @@ from lm_data import IMDB_JMARS
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from lm_lstm_imdb import (init_params, init_tparams, load_params,
         is_train, build_rev_model, build_gen_model,
-        build_sampler, gen_sample, beam_sample)
+        build_sampler, gen_sample, beam_sample, ELBOcost)
 
 import cPickle as pkl
 import numpy
@@ -29,7 +29,6 @@ num_iwae_samps = 25
 num_iwae_iters = 1
 num_iwae_samps_train = 5
 numpy.random.seed(seed)
-is_train = tensor.scalar('is_train')
 
 
 def pred_probs(f_log_probs, f_iwae_eval, options, data, source='valid'):
@@ -43,12 +42,14 @@ def pred_probs(f_log_probs, f_iwae_eval, options, data, source='valid'):
         elif source == 'test':
             return data.get_test_batch()
         else:
-            return [data.get_train_batch()
-                    for i in range(100)]
-
+            train_batches = []
+            iterator = data.get_train_batch()
+            for i in range(100):
+                train_batches.append(next(iterator))
+            return train_batches
 
     data_iterator = get_data(data, source)
-    for (x, y, x_mask) in data_iterator:
+    for num, (x, y, x_mask) in enumerate(data_iterator):
         x = x.transpose(1, 0)
         y = y.transpose(1, 0)
         x_mask = x_mask.transpose(1, 0)
@@ -148,14 +149,11 @@ def eval():
 
     print('Starting validation...')
     train_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='train')
+    print('Train ELBO: {:.2f}, IWAE: {:.2f}'.format(train_err[0], train_err[1]))
     valid_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='valid')
+    print('Valid ELBO: {:.2f}, IWAE: {:.2f}'.format(valid_err[0], valid_err[1]))
     test_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='test')
-    history_errs.append(valid_err[0])
-    str2 = 'Train ELBO: {:.2f}, IWAE: {:.2f}'.format(train_err[0], train_err[1])
-    str1 = 'Valid ELBO: {:.2f}, IWAE: {:.2f}'.format(valid_err[0], valid_err[1])
-    str1 = 'Test ELBO:  {:.2f}, IWAE: {:.2f}'.format(test_err[0], test_err[1])
-    str1 = str1 + '\n' + str2
-    print(str1)
+    print('Test ELBO:  {:.2f}, IWAE: {:.2f}'.format(test_err[0], test_err[1]))
 
 
 if __name__ == '__main__':

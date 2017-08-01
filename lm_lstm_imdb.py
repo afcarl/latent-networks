@@ -135,12 +135,12 @@ def itemlist(tparams):
 
 
 # dropout
-def dropout_layer(state_before, use_noise, trng):
+def dropout_layer(state_before, use_noise, trng, p=0.2):
     proj = tensor.switch(
-        use_noise,
-        state_before * trng.binomial(state_before.shape, p=0.5, n=1,
+        use_noise >= 0.5,
+        state_before * trng.binomial(state_before.shape, p=(1. - p), n=1,
                                      dtype=state_before.dtype),
-        state_before * 0.5)
+        state_before * (1. - p))
     return proj
 
 
@@ -507,11 +507,13 @@ def latent_lstm_layer(
 
             aux_hid = tensor.dot(z_smp, aux_ff_1_W) + aux_ff_1_b
             aux_hid = lrelu(aux_hid)
+
             # concatenate with forward state
             if options['use_h_in_aux']:
                 aux_hid = tensor.concatenate([aux_hid, h_tm1], axis=1)
+
             aux_out = tensor.dot(aux_hid, aux_ff_2_W) + aux_ff_2_b
-            aux_out = T.clip(aux_out, -10., 10.)
+            aux_out = T.clip(aux_out, -15., 15.)
 
             aux_mu, aux_sigma = aux_out[:, :d_.shape[1]], aux_out[:, d_.shape[1]:]
             aux_mu = tensor.tanh(aux_mu)
@@ -713,6 +715,9 @@ def build_rev_model(tparams, options, x, y, x_mask):
 def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     # disconnecting reconstruction gradient from going in the backward encoder
     x_emb = get_layer('ff')[1](tparams, x, options, prefix='ff_in_lstm', activ='lambda x: x')
+    # small dropout
+    trng = RandomStreams(seed)
+    x_emb = dropout_layer(x_emb, is_train, trng, p=options['dropout'])
     rvals, updates_gen = get_layer('latent_lstm')[1](
        tparams, state_below=x_emb, options=options,
        prefix='encoder', mask=x_mask, gaussian_s=zmuv,
@@ -720,7 +725,6 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
 
     states_gen, memories_gen, z, log_pz, log_qzIx, kld, rec_cost_rev = (
             rvals[0], rvals[1], rvals[2], rvals[3], rvals[4], rvals[5], rvals[6])
-    trng = RandomStreams(seed)
     out_logits = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_mus')
     out_probs = masked_softmax(out_logits, axis=-1)
 
@@ -980,11 +984,17 @@ def pred_probs(f_log_probs, f_iwae_eval, options, data, source='valid'):
     def get_data(data, source):
         if source == 'valid':
             return data.get_valid_batch()
-        else:
+        elif source == 'test':
             return data.get_test_batch()
+        else:
+            train_batches = []
+            iterator = data.get_train_batch()
+            for i in range(100):
+                train_batches.append(next(iterator))
+            return train_batches
 
     data_iterator = get_data(data, source)
-    for (x, y, x_mask) in data_iterator:
+    for num, (x, y, x_mask) in enumerate(data_iterator):
         x = x.transpose(1, 0)
         y = y.transpose(1, 0)
         x_mask = x_mask.transpose(1, 0)
@@ -1071,9 +1081,9 @@ def train(dim_input=200,  # input vector dimensionality
     dim_mlp = dim
     learn_h0 = False
 
-    desc = 'seed{}_aux{}_aux_zh{}_iwae{}_nfl{}'.format(
+    desc = 'seed{}_aux{}_aux_zh{}_iwae{}_nfl{}_dr{:.1f}'.format(
         seed, weight_aux, str(use_h_in_aux), str(use_iwae),
-        str(num_nf_layers))
+        str(num_nf_layers), dropout)
     logs = '{}/{}_log.txt'.format(log_dir, desc)
     opts = '{}/{}_opts.pkl'.format(model_dir, desc)
     pars = '{}/{}_pars.npz'.format(model_dir, desc)
@@ -1173,18 +1183,13 @@ def train(dim_input=200,  # input vector dimensionality
     f_update = eval(optimizer)(lr, tparams, all_gshared)
 
     print('Optimization')
-    history_errs = []
-    # reload history
-    best_p = None
-    bad_count = 0
-
     # Training loop
     uidx = 0
     estop = False
     bad_counter = 0
     kl_start = model_options['kl_start']
     kl_rate = model_options['kl_rate']
-    old_valid_err = 99999
+    best_valid_err = 99999
 
     # append to logs
     if os.path.exists(logs):
@@ -1259,39 +1264,31 @@ def train(dim_input=200,  # input vector dimensionality
                 log_file.flush()
 
         print('Starting validation...')
+        train_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='train')
+        str1 = 'Train ELBO: {:.2f}, IWAE: {:.2f}'.format(train_err[0], train_err[1])
         valid_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='valid')
+        str2 = 'Valid ELBO: {:.2f}, IWAE: {:.2f}'.format(valid_err[0], valid_err[1])
         test_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='test')
-        history_errs.append(valid_err[0])
-        str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err[0], test_err[0])
-        str2 = 'Valid/Test IWAE: {:.2f}, {:.2f}'.format(valid_err[1], test_err[1])
-        str1 = str1 + '\n' + str2
-        print(str1)
-        log_file.write(str1 + '\n')
+        str3 = 'Test ELBO:  {:.2f}, IWAE: {:.2f}'.format(test_err[0], test_err[1])
+        str4 = '\n'.join([str1, str2, str3])
+        print(str4)
+        log_file.write(str4 + '\n')
 
-        if (old_valid_err < history_errs[-1]):
-            if lrate > 0.00005:
+        if (best_valid_err < valid_err[1]):
+            if lrate > 0.00001:
                 print('Decaying learning rate to {}'.format(lrate))
                 lrate = lrate / 2.0
         else:
-            # Save better model.
+            # Save best model and best error
+            best_valid_err = valid_err[1]
             save_params(pars, tparams)
-
-        old_valid_err = history_errs[-1]
 
         # finish after this many updates
         if uidx >= finish_after:
             print('Finishing after %d iterations!' % uidx)
             break
 
-    valid_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='valid')
-    test_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='test')
-    str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err[0], test_err[0])
-    str2 = 'Valid/Test IWAE: {:.2f}, {:.2f}'.format(valid_err[1], test_err[1])
-    str1 = str1 + '\n' + str2
-    print(str1)
-    log_file.write(str1 + '\n')
-    log_file.close()
-    return valid_err
+    return best_valid_err
 
 
 if __name__ == '__main__':
