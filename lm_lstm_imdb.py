@@ -18,13 +18,14 @@ from tqdm import tqdm
 import warnings
 import time
 import cPickle
+from philly_utils import print_philly_hb
 from collections import OrderedDict
 
 profile = False
 seed = 1234
-num_iwae_samps = 25
-num_iwae_iters = 1
-num_iwae_samps_train = 5
+num_iwae_samps = 25       # evaluate with 25 samples per sentence
+num_iwae_iters = 1        # 1 iteration of iwae
+num_iwae_samps_train = 5  # train with 5 samples of iwae
 numpy.random.seed(seed)
 is_train = tensor.scalar('is_train')
 
@@ -1089,16 +1090,16 @@ def train(dim_input=200,  # input vector dimensionality
     pars = '{}/{}_pars.npz'.format(model_dir, desc)
     print(desc)
 
-    data = IMDB_JMARS(data_dir, seq_len=16,
-                      batch_size=batch_size, topk=16000)
-    dim_input = data.voc_size
-
     # Model options
     model_options = locals().copy()
     pkl.dump(model_options, open(opts, 'wb'))
-
     print('Options:')
     print(model_options)
+    
+    data = IMDB_JMARS(data_dir, seq_len=16,
+            batch_size=batch_size, topk=16000)
+    dim_input = data.voc_size
+
     print('Building model')
     params = init_params(model_options)
     # load model
@@ -1254,7 +1255,7 @@ def train(dim_input=200,  # input vector dimensionality
 
             # verbose
             if numpy.mod(uidx, dispFreq) == 0:
-                print('PROGRESS: 00.00%')
+                print_philly_hb()
                 str1 = 'Epoch {:d}  Update {:d}  VaeCost {:.2f}  AuxCost {:.2f}  KldCost {:.2f}  TotCost {:.2f}  ElboCost {:.2f}  NllRev {:.2f}  NllGen {:.2f}  KL_start {:.2f}'.format(
                     eidx, uidx, np.mean(tr_costs[0]), np.mean(tr_costs[1]), np.mean(tr_costs[3]),
                     np.mean(tr_costs[2]), np.mean(tr_costs[4]), np.mean(tr_costs[5]), np.mean(tr_costs[6]),
