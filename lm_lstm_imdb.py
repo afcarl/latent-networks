@@ -514,7 +514,7 @@ def latent_lstm_layer(
                 aux_hid = tensor.concatenate([aux_hid, h_tm1], axis=1)
 
             aux_out = tensor.dot(aux_hid, aux_ff_2_W) + aux_ff_2_b
-            aux_out = T.clip(aux_out, -15., 15.)
+            aux_out = T.clip(aux_out, -10., 10.)
 
             aux_mu, aux_sigma = aux_out[:, :d_.shape[1]], aux_out[:, d_.shape[1]:]
             aux_mu = tensor.tanh(aux_mu)
@@ -597,7 +597,6 @@ def init_params(options):
             options, params, prefix='ff_out_mus',
             nin=options['dim'], nout=options['dim_input'],
             ortho=True)
-
     # backward deterministic LSTM
     params = \
         get_layer(options['encoder'])[0](
@@ -609,7 +608,6 @@ def init_params(options):
             options, params, prefix='ff_out_mus_r',
             nin=options['dim'], nout=options['dim_input'],
             ortho=True)
-
     # prior network
     params = \
         get_layer('ff')[0](
@@ -653,7 +651,6 @@ def init_params(options):
             nin=dim_aux,
             nout=2 * options['dim'],
             ortho=True)
-
     # Decoder/Generative network
     params = \
         get_layer('ff')[0](
@@ -684,7 +681,6 @@ def build_rev_model(tparams, options, x, y, x_mask):
     xr = xc[::-1]
     # xr_mask = [0, 1, 1, 1]
     xr_mask = xc_mask[::-1]
-
     xr_emb = \
         get_layer('ff')[1](
             tparams, xr, options,
@@ -718,6 +714,7 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     x_emb = get_layer('ff')[1](tparams, x, options, prefix='ff_in_lstm', activ='lambda x: x')
     # small dropout
     trng = RandomStreams(seed)
+    print('Dropout set to {:.2f}'.format(options['dropout']))
     x_emb = dropout_layer(x_emb, is_train, trng, p=options['dropout'])
     rvals, updates_gen = get_layer('latent_lstm')[1](
        tparams, state_below=x_emb, options=options,
@@ -1092,20 +1089,21 @@ def train(dim_input=200,  # input vector dimensionality
 
     # Model options
     model_options = locals().copy()
-    pkl.dump(model_options, open(opts, 'wb'))
-    print('Options:')
-    print(model_options)
-    
     data = IMDB_JMARS(data_dir, seq_len=16,
             batch_size=batch_size, topk=16000)
     dim_input = data.voc_size
+    model_options['dim_input'] = dim_input
+
+    pkl.dump(model_options, open(opts, 'wb'))
+    print('Options:')
+    print(model_options)
 
     print('Building model')
     params = init_params(model_options)
     # load model
-    if os.path.exists(pars):
-        print("Reloading model from {}".format(pars))
-        params = load_params(pars, params)
+    # if os.path.exists(pars):
+    #     print("Reloading model from {}".format(pars))
+    #     params = load_params(pars, params)
     tparams = init_tparams(params)
 
     x = tensor.lmatrix('x')
@@ -1122,10 +1120,10 @@ def train(dim_input=200,  # input vector dimensionality
 
     # build the symbolic computational graph
     nll_rev, states_rev, updates_rev = \
-        build_rev_model(tparams, model_options, x, y, x_mask)
+            build_rev_model(tparams, model_options, x, y, x_mask)
     nll_gen, states_gen, kld, rec_cost_rev, updates_gen, \
-        log_pxIz, log_pz, log_qzIx, z, _ = \
-        build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
+            log_pxIz, log_pz, log_qzIx, z, _ = \
+            build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
     if model_options['use_iwae']:
         log_ws = log_pxIz - log_qzIx + log_pz
@@ -1193,11 +1191,11 @@ def train(dim_input=200,  # input vector dimensionality
     best_valid_err = 99999
 
     # append to logs
-    if os.path.exists(logs):
-        print("Appending to {}".format(logs))
-        log_file = open(logs, 'a')
-    else:
-        log_file = open(logs, 'w')
+    # if os.path.exists(logs):
+    #    print("Appending to {}".format(logs))
+    #    log_file = open(logs, 'a')
+    # else:
+    log_file = open(logs, 'w')
 
     # count minibatches in one epoch
     num_train_batches = 0.
