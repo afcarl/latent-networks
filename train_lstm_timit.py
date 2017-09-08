@@ -1,19 +1,22 @@
 #!/usr/bin/env python
 
 import os
+import argparse
 from lm_lstm_timit import train
 
 def main(job_id, params):
     print(params)
     validerr = train(
-        saveto=params['model'][0],
-        reload_=params['reload'][0],
-        dim_input=params['dim_input'][0],
-        dim=params['dim'][0],
-        decay_c=params['decay-c'][0],
-        lrate=params['learning-rate'][0],
-        optimizer=params['optimizer'][0],
-        dim_proj=params['dim_proj'][0],
+        data_dir='experiments/data',
+        model_dir='experiments/timit',
+        log_dir='experiments/timit',
+        reload_=params['reload'],
+        dim_input=params['dim_input'],
+        dim=params['dim'],
+        decay_c=params['decay_c'],
+        lrate=params['learning_rate'],
+        optimizer=params['optimizer'],
+        dim_proj=params['dim_proj'],
         batch_size=32,
         valid_batch_size=32,
         dispFreq=10,
@@ -22,9 +25,13 @@ def main(job_id, params):
         dataset=None,
         valid_dataset=None,
         dictionary=None,
-        use_dropout=params['use-dropout'][0],
-        kl_start=0.2,
-        kl_rate=0.00005)
+        weight_aux_gen=params['weight_aux_gen'],
+        weight_aux_nll=params['weight_aux_nll'],
+        use_dropout=params['use_dropout'],
+        use_h_in_aux=params['use_h_in_aux'],
+        dim_z=params['dim_z'],
+        kl_start=params['kl_start'],
+        kl_rate=params['kl_rate'])
     return validerr
 
 if __name__ == '__main__':
@@ -34,13 +41,24 @@ if __name__ == '__main__':
     except:
         pass
 
+    parser = argparse.ArgumentParser("TIMIT experiments for VRNN with auxiliary costs.")
+    parser.add_argument('--weight_aux_gen', type=float, default=0.)
+    parser.add_argument('--weight_aux_nll', type=float, default=0.)
+    parser.add_argument('--use_h_in_aux', action='store_true')
+    args = parser.parse_args()
+
     main(0, {
-        'model': ['./experiments/timit/'],
-        'dim_input': [200],
-        'dim': [2000],
-        'dim_proj': [600],
-        'optimizer': ['adam'],
-        'decay-c': [0.],
-        'use-dropout': [False],
-        'learning-rate': [0.001],
-        'reload': [False]})
+        'dim_input': 200,
+        'dim': 1024,
+        'dim_proj': 512,
+        'optimizer': 'adam',
+        'decay_c': 0.,
+        'use_h_in_aux': args.use_h_in_aux,
+        'weight_aux_gen': args.weight_aux_gen,
+        'weight_aux_nll': args.weight_aux_nll,
+        'use_dropout': False,
+        'kl_start': 0.2,
+        'kl_rate': 0.0003,
+        'dim_z': 256,
+        'learning_rate': 0.001,
+        'reload': False})

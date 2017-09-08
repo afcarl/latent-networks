@@ -56,7 +56,9 @@ def chunk(sequence, n):
     for i in range(0, len(sequence), n):
         yield sequence[i:i + n]
 
+
 C = - 0.5 * np.log(2 * np.pi)
+
 
 def log_prob_gaussian(x, mean, log_var):
     return C - log_var / 2 - (x - mean) ** 2 / (2 * T.exp(log_var))
@@ -706,8 +708,8 @@ def adam(lr, tparams, gshared, beta1=0.9, beta2=0.99, e=1e-5):
 
 
 def train(dim_input=200,  # input vector dimensionality
-          dim=2000,  # the number of GRU units
-          dim_proj=600,  # the number of GRU units
+          dim=1024,  # the number of GRU units
+          dim_proj=512,  # the number of GRU units
           encoder='lstm',
           patience=10,  # early stopping patience
           max_epochs=5000,
@@ -715,10 +717,12 @@ def train(dim_input=200,  # input vector dimensionality
           dispFreq=100,
           decay_c=0.,  # L2 weight decay penalty
           lrate=0.001,
-          maxlen=100,  # maximum length of the description
           optimizer='adam',
           batch_size=16,
           valid_batch_size=16,
+          data_dir='experiments/data',
+          model_dir='experiments/timit',
+          log_dir='experiments/timit',
           saveto='model.npz',
           validFreq=1000,
           saveFreq=1000,  # save the parameters after every saveFreq updates
@@ -728,28 +732,31 @@ def train(dim_input=200,  # input vector dimensionality
           dictionary=None,  # Not used
           use_dropout=False,
           reload_=False,
+          use_h_in_aux=False,
+          weight_aux_gen=0.,
+          weight_aux_nll=0.,
+          dim_z=256,
           kl_start=0.2,
-          weight_aux=0.0005,
           kl_rate=0.0003):
 
     prior_hidden = dim
-    dim_z = 256
     encoder_hidden = dim
     learn_h0 = False
-    weight_aux = 0.0005
-    weight_nll = 0.0005
+    seed = 0.
 
-    desc = saveto + 'model_' + str(weight_aux) + '_weight_aux_' + \
-        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_log.txt'
-    opts = saveto + 'model_' + str(weight_aux) + '_weight_aux_' + \
-        str(kl_start) + '_kl_Start_' + str(kl_rate) +  '_kl_rate_opts.pkl'
+    desc = 'seed{}_aux_gen{}_aux_nll{}_aux_zh{}'.format(
+        seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux))
+    logs = '{}/{}_log.txt'.format(log_dir, desc)
+    opts = '{}/{}_opts.pkl'.format(model_dir, desc)
+    print("Training {}".format(desc))
 
     # Model options
     model_options = locals().copy()
     pkl.dump(model_options, open(opts, 'wb'))
-    log_file = open(desc, 'w')
+    log_file = open(logs, 'w')
 
-    data = TimitData("timit_raw_batchsize64_seqlen40.npz", batch_size=model_options['batch_size'])
+    data = TimitData("{}/timit_raw_batchsize64_seqlen40.npz".format(data_dir),
+                     batch_size=model_options['batch_size'])
 
     print('Building model')
     params = init_params(model_options)
@@ -770,7 +777,7 @@ def train(dim_input=200,  # input vector dimensionality
 
     vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f).mean()
     elbo_cost = ELBOcost(nll_gen, kld, kld_weight=1.).mean()
-    aux_cost = (numpy.float32(weight_aux) * rec_cost_rev + weight_nll * nll_rev).mean()
+    aux_cost = (numpy.float32(weight_aux_gen) * rec_cost_rev + weight_aux_nll * nll_rev).mean()
     tot_cost = (vae_cost + aux_cost)
     nll_gen_cost = nll_gen.mean()
     nll_rev_cost = nll_rev.mean()
@@ -841,20 +848,20 @@ def train(dim_input=200,  # input vector dimensionality
             f_update(numpy.float32(lrate))
 
             # update costs
-            tr_costs[0].append(vae_cost_np)
-            tr_costs[1].append(aux_cost_np)
-            tr_costs[2].append(tot_cost_np)
-            tr_costs[3].append(kld_cost_np)
-            tr_costs[4].append(elbo_cost_np)
-            tr_costs[5].append(nll_rev_cost_np)
-            tr_costs[6].append(nll_gen_cost_np)
+            tr_costs[0].append(vae_cost_np[:-10])
+            tr_costs[1].append(aux_cost_np[:-10])
+            tr_costs[2].append(tot_cost_np[:-10])
+            tr_costs[3].append(kld_cost_np[:-10])
+            tr_costs[4].append(elbo_cost_np[:-10])
+            tr_costs[5].append(nll_rev_cost_np[:-10])
+            tr_costs[6].append(nll_gen_cost_np[:-10])
             ud = time.time() - ud_start
 
             # verbose
             if numpy.mod(uidx, dispFreq) == 0:
                 str1 = 'Epoch {:d}  Update {:d}  VaeCost {:.2f}  AuxCost {:.2f}  KldCost {:.2f}  TotCost {:.2f}  ElboCost {:.2f}  NllRev {:.2f}  NllGen {:.2f}  KL_start {:.2f}'.format(
-                    eidx, uidx, np.mean(tr_costs[0]), np.mean(tr_costs[1]), np.mean(tr_costs[3]), np.mean(tr_costs[2]), np.mean(tr_costs[4]), \
-                    np.mean(tr_costs[5]), np.mean(tr_costs[6]), kl_start)
+                    eidx, uidx, np.mean(tr_costs[0]), np.mean(tr_costs[1]), np.mean(tr_costs[3]),
+                    np.mean(tr_costs[2]), np.mean(tr_costs[4]), np.mean(tr_costs[5]), np.mean(tr_costs[6]), kl_start)
                 print(str1)
                 log_file.write(str1 + '\n')
                 log_file.flush()
