@@ -444,16 +444,18 @@ def latent_lstm_layer(
     b = param('b')
     W = param('W')
     non_seqs = [U, b, W, tparams[_p('z_cond', 'W')],
-                tparams[_p('trans_1', 'W')],
-                tparams[_p('trans_1', 'b')],
-                tparams[_p('z_mus', 'W')],
-                tparams[_p('z_mus', 'b')],
-                tparams[_p('inf', 'W')],
-                tparams[_p('inf', 'b')],
-                tparams[_p('inf_mus', 'W')],
-                tparams[_p('inf_mus', 'b')],
-                tparams[_p('gen_mus', 'W')],
-                tparams[_p('gen_mus', 'b')]]
+                tparams[_p('pri_ff_1', 'W')],
+                tparams[_p('pri_ff_1', 'b')],
+                tparams[_p('pri_ff_2', 'W')],
+                tparams[_p('pri_ff_2', 'b')],
+                tparams[_p('inf_ff_1', 'W')],
+                tparams[_p('inf_ff_1', 'b')],
+                tparams[_p('inf_ff_2', 'W')],
+                tparams[_p('inf_ff_2', 'b')],
+                tparams[_p('aux_ff_1', 'W')],
+                tparams[_p('aux_ff_1', 'b')],
+                tparams[_p('aux_ff_2', 'W')],
+                tparams[_p('aux_ff_2', 'b')]]
 
     # initial/previous memory
     if init_memory is None:
@@ -461,42 +463,52 @@ def latent_lstm_layer(
 
     def _slice(_x, n, dim):
         if _x.ndim == 3:
-            return _x[:, :, n*dim:(n+1)*dim]
-        return _x[:, n*dim:(n+1)*dim]
+            return _x[:, :, n * dim:(n + 1) * dim]
+        return _x[:, n * dim:(n + 1) * dim]
 
     def _step(mask, sbelow, d_, g_s, sbefore, cell_before,
-              U, b, W, W_cond, trans_1_w, trans_1_b,
-              z_mus_w, z_mus_b,
-              inf_w, inf_b,
-              inf_mus_w, inf_mus_b,
-              gen_mus_w, gen_mus_b):
+              U, b, W, W_cond,
+              pri_ff_1_w, pri_ff_1_b,
+              pri_ff_2_w, pri_ff_2_b,
+              inf_ff_1_w, inf_ff_1_b,
+              inf_ff_2_w, inf_ff_2_b,
+              aux_ff_1_w, aux_ff_1_b,
+              aux_ff_2_w, aux_ff_2_b):
 
-        p_z = lrelu(tensor.dot(sbefore, trans_1_w) + trans_1_b)
-        z_mus = tensor.dot(p_z, z_mus_w) + z_mus_b
+        p_z = lrelu(tensor.dot(sbefore, pri_ff_1_w) + pri_ff_1_b)
+        z_mus = tensor.dot(p_z, pri_ff_2_w) + pri_ff_2_b
         z_dim = z_mus.shape[-1] / 2
         z_mu, z_sigma = z_mus[:, :z_dim], z_mus[:, z_dim:]
 
         if d_ is not None:
-            encoder_hidden = lrelu(tensor.dot(concatenate([sbefore, d_], axis=1), inf_w) + inf_b)
-            encoder_mus = tensor.dot(encoder_hidden, inf_mus_w) + inf_mus_b
+            encoder_hidden = lrelu(tensor.dot(concatenate([sbefore, d_], axis=1), inf_ff_1_w) + inf_ff_1_b)
+            encoder_mus = tensor.dot(encoder_hidden, inf_ff_2_w) + inf_ff_2_b
             encoder_mu, encoder_sigma = encoder_mus[:, :z_dim], encoder_mus[:, z_dim:]
             tild_z_t = encoder_mu + g_s * tensor.exp(0.5 * encoder_sigma)
             kld = gaussian_kld(encoder_mu, encoder_sigma, z_mu, z_sigma)
             kld = tensor.sum(kld, axis=-1)
-            decoder_mus = tensor.dot(tild_z_t, gen_mus_w) + gen_mus_b
-            decoder_mu, decoder_sigma = decoder_mus[:, :d_.shape[1]], decoder_mus[:, d_.shape[1]:]
-            decoder_sigma = tensor.clip(decoder_sigma, -8., 8.)
-            decoder_mu = tensor.tanh(decoder_mu)
+
+            aux_hid = tensor.dot(tild_z_t, aux_ff_1_w) + aux_ff_1_b
+            aux_hid = lrelu(aux_hid)
+
+            # concatenate with forward state
+            if options['use_h_in_aux']:
+                aux_hid = tensor.concatenate([aux_hid, sbefore], axis=1)
+
+            aux_out = tensor.dot(aux_hid, aux_ff_2_w) + aux_ff_2_b
+            aux_out = T.clip(aux_out, -10., 10.)
+            aux_mu, aux_sigma = aux_out[:, :d_.shape[1]], aux_out[:, d_.shape[1]:]
+            aux_mu = tensor.tanh(aux_mu)
             disc_d_ = theano.gradient.disconnected_grad(d_)
-            recon_cost = (disc_d_ - decoder_mu) ** 2.0
-            recon_cost = tensor.sum(recon_cost, axis=-1)
+            aux_cost = -log_prob_gaussian(disc_d_, aux_mu, aux_sigma)
+            aux_cost = tensor.sum(aux_cost, axis=-1)
         else:
             tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_sigma)
             kld = tensor.sum(tild_z_t, axis=-1) * 0.
-            recon_cost = tensor.sum(tild_z_t, axis=-1) * 0.
+            aux_cost = tensor.sum(tild_z_t, axis=-1) * 0.
 
         z = tild_z_t
-        preact = tensor.dot(sbefore, param('U')) +  tensor.dot(z, W_cond)
+        preact = tensor.dot(sbefore, param('U')) + tensor.dot(z, W_cond)
         preact += sbelow
         preact += param('b')
 
@@ -509,7 +521,7 @@ def latent_lstm_layer(
         c = mask * c + (1. - mask) * cell_before
         h = o * tensor.tanh(c)
         h = mask * h + (1. - mask) * sbefore
-        return h, c, z, kld, recon_cost
+        return h, c, z, kld, aux_cost
 
     lstm_state_below = tensor.dot(state_below, param('W')) + param('b')
     if state_below.ndim == 3:
@@ -578,14 +590,25 @@ def init_params(options):
                                 nin=options['dim'],
                                 nout=2 * options['dim_input'],
                                 ortho=False)
-    #Prior Network params
-    params = get_layer('ff')[0](options, params, prefix='trans_1', nin=options['dim'], nout=options['prior_hidden'], ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='z_mus', nin=options['prior_hidden'], nout=2 * options['dim_z'], ortho=False)
-    #Inference network params
-    params = get_layer('ff')[0](options, params, prefix='inf', nin = 2 * options['dim'], nout=options['encoder_hidden'], ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='inf_mus', nin = options['encoder_hidden'], nout=2 * options['dim_z'], ortho=False)
-    #Generative Network params
-    params = get_layer('ff')[0](options, params, prefix='gen_mus', nin = options['dim_z'], nout=2 * options['dim'], ortho=False)
+    # Prior Network params
+    params = get_layer('ff')[0](options, params, prefix='pri_ff_1', nin=options['dim'], nout=options['dim_proj'], ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='pri_ff_2', nin=options['dim_proj'], nout=2 * options['dim_z'], ortho=False)
+    # Inference network params
+    params = get_layer('ff')[0](options, params, prefix='inf_ff_1', nin=2 * options['dim'], nout=options['dim_proj'], ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='inf_ff_2', nin=options['dim_proj'], nout=2 * options['dim_z'], ortho=False)
+    # Auxiliary network params
+    params = \
+        get_layer('ff')[0](options, params, prefix='aux_ff_1',
+                           nin=options['dim_z'], nout=options['dim_proj'],
+                           ortho=False)
+    if options['use_h_in_aux']:
+        dim_aux = options['dim_proj'] + options['dim']
+    else:
+        dim_aux = options['dim_proj']
+    params = \
+        get_layer('ff')[0](options, params, prefix='aux_ff_2',
+                           nin=dim_aux, nout=2 * options['dim'],
+                           ortho=False)
     return params
 
 
@@ -707,15 +730,15 @@ def adam(lr, tparams, gshared, beta1=0.9, beta2=0.99, e=1e-5):
     return f_update
 
 
-def train(dim_input=200,  # input vector dimensionality
-          dim=1024,  # the number of GRU units
-          dim_proj=512,  # the number of GRU units
+def train(dim_input=200,          # input vector dimensionality
+          dim=1024,               # the number of LSTM units
+          dim_proj=512,           # the number of hidden units
           encoder='lstm',
-          patience=10,  # early stopping patience
+          patience=10,            # early stopping patience
           max_epochs=5000,
           finish_after=10000000,  # finish after this many updates
           dispFreq=100,
-          decay_c=0.,  # L2 weight decay penalty
+          decay_c=0.,             # L2 weight decay penalty
           lrate=0.001,
           optimizer='adam',
           batch_size=16,
@@ -725,11 +748,6 @@ def train(dim_input=200,  # input vector dimensionality
           log_dir='experiments/timit',
           saveto='model.npz',
           validFreq=1000,
-          saveFreq=1000,  # save the parameters after every saveFreq updates
-          sampleFreq=100,  # generate some samples after every sampleFreq
-          dataset=None,  # Not used
-          valid_dataset=None,  # Not used
-          dictionary=None,  # Not used
           use_dropout=False,
           reload_=False,
           use_h_in_aux=False,
@@ -739,8 +757,6 @@ def train(dim_input=200,  # input vector dimensionality
           kl_start=0.2,
           kl_rate=0.0003):
 
-    prior_hidden = dim
-    encoder_hidden = dim
     learn_h0 = False
     seed = 0.
 
@@ -748,7 +764,9 @@ def train(dim_input=200,  # input vector dimensionality
         seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux))
     logs = '{}/{}_log.txt'.format(log_dir, desc)
     opts = '{}/{}_opts.pkl'.format(model_dir, desc)
-    print("Training {}".format(desc))
+
+    print("- log file: {}".format(logs))
+    print("- opts file: {}".format(opts))
 
     # Model options
     model_options = locals().copy()
@@ -783,17 +801,13 @@ def train(dim_input=200,  # input vector dimensionality
     nll_rev_cost = nll_rev.mean()
     kld_cost = kld.mean()
 
-    print('Building f_log_probs...')
+    print('- Building f_log_probs...')
     inps = [x, y, x_mask, zmuv, weight_f]
     f_log_probs = theano.function(
         inps[:-1], ELBOcost(nll_gen, kld, kld_weight=1.),
         updates=(updates_gen + updates_rev), profile=profile)
-    print('Done')
-
-    print('Computing gradient...')
+    print('- Building gradient...')
     grads = tensor.grad(tot_cost, itemlist(tparams))
-    print('Done')
-
     all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 100.)
     # update function
     all_gshared = [theano.shared(p.get_value() * 0., name='%s_grad' % k)
@@ -801,12 +815,13 @@ def train(dim_input=200,  # input vector dimensionality
     all_gsup = [(gs, g) for gs, g in zip(all_gshared, all_grads)]
     # forward pass + gradients
     outputs = [vae_cost, aux_cost, tot_cost, kld_cost, elbo_cost, nll_rev_cost, nll_gen_cost, non_finite]
-    print('Fprop')
+    print('- Building f_prop...')
     f_prop = theano.function(inps, outputs, updates=all_gsup)
-    print('Fupdate')
+    print('- Building f_update...')
     f_update = eval(optimizer)(lr, tparams, all_gshared)
+    print('DONE.')
 
-    print('Optimization')
+    print('- Starting optimization...')
     history_errs = []
     # reload history
     if reload_ and os.path.exists(saveto):
@@ -821,6 +836,7 @@ def train(dim_input=200,  # input vector dimensionality
     kl_start = model_options['kl_start']
     kl_rate = model_options['kl_rate']
     old_valid_err = numpy.inf
+    start = time.time()
 
     for eidx in range(max_epochs):
         print("Epoch: {}".format(eidx))
@@ -835,33 +851,39 @@ def train(dim_input=200,  # input vector dimensionality
 
             n_samples += x.shape[1]
             uidx += 1
-            if kl_start < 1.:
-                kl_start += kl_rate
+            kl_start = min(1., kl_start + kl_rate)
 
-            ud_start = time.time()
-            # compute cost, grads and copy grads to shared variables
+            # build samples for the reparametrization trick
             zmuv = numpy.random.normal(loc=0.0, scale=1.0, size=(x.shape[0], x.shape[1], model_options['dim_z'])).astype('float32')
+            # propagate samples forward into the network
             vae_cost_np, aux_cost_np, tot_cost_np, kld_cost_np, elbo_cost_np, nll_rev_cost_np, nll_gen_cost_np, not_finite = \
                 f_prop(x, y, x_mask, zmuv, np.float32(kl_start))
+            # skip nan gradients
             if not_finite:
                 continue
+            # update weights given learning rate
             f_update(numpy.float32(lrate))
 
             # update costs
-            tr_costs[0].append(vae_cost_np[:-10])
-            tr_costs[1].append(aux_cost_np[:-10])
-            tr_costs[2].append(tot_cost_np[:-10])
-            tr_costs[3].append(kld_cost_np[:-10])
-            tr_costs[4].append(elbo_cost_np[:-10])
-            tr_costs[5].append(nll_rev_cost_np[:-10])
-            tr_costs[6].append(nll_gen_cost_np[:-10])
-            ud = time.time() - ud_start
+            tr_costs[0].append(vae_cost_np)
+            tr_costs[1].append(aux_cost_np)
+            tr_costs[2].append(tot_cost_np)
+            tr_costs[3].append(kld_cost_np)
+            tr_costs[4].append(elbo_cost_np)
+            tr_costs[5].append(nll_rev_cost_np)
+            tr_costs[6].append(nll_gen_cost_np)
+
+            # average of last 10 batches
+            for n in range(len(tr_costs)):
+                tr_costs[n] = tr_costs[n][-10:]
 
             # verbose
             if numpy.mod(uidx, dispFreq) == 0:
-                str1 = 'Epoch {:d}  Update {:d}  VaeCost {:.2f}  AuxCost {:.2f}  KldCost {:.2f}  TotCost {:.2f}  ElboCost {:.2f}  NllRev {:.2f}  NllGen {:.2f}  KL_start {:.2f}'.format(
+                checkpoint = time.time()
+                str1 = 'Epoch {:d}  Update {:d}  VaeCost {:.2f}  AuxCost {:.2f}  KldCost {:.2f}  TotCost {:.2f}  ElboCost {:.2f}  NllRev {:.2f}  NllGen {:.2f}  KL_start {:.2f} Speed {:.2f}it/s'.format(
                     eidx, uidx, np.mean(tr_costs[0]), np.mean(tr_costs[1]), np.mean(tr_costs[3]),
-                    np.mean(tr_costs[2]), np.mean(tr_costs[4]), np.mean(tr_costs[5]), np.mean(tr_costs[6]), kl_start)
+                    np.mean(tr_costs[2]), np.mean(tr_costs[4]), np.mean(tr_costs[5]), np.mean(tr_costs[6]),
+                    kl_start, float(uidx) / (checkpoint - start))
                 print(str1)
                 log_file.write(str1 + '\n')
                 log_file.flush()
@@ -872,6 +894,7 @@ def train(dim_input=200,  # input vector dimensionality
         history_errs.append(valid_err)
         str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err, test_err)
 
+        # decay learning rate if validation error increases
         if (old_valid_err < valid_err) and lrate > 0.0001:
             lrate = lrate / 2.0
 

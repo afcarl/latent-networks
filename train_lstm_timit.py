@@ -2,10 +2,13 @@
 
 import os
 import argparse
+import pprint
 from lm_lstm_timit import train
 
+
 def main(job_id, params):
-    print(params)
+    print("Parameters:")
+    pprint.pprint(params)
     validerr = train(
         data_dir='experiments/data',
         model_dir='experiments/timit',
@@ -20,11 +23,6 @@ def main(job_id, params):
         batch_size=32,
         valid_batch_size=32,
         dispFreq=10,
-        saveFreq=1000,
-        sampleFreq=1000,
-        dataset=None,
-        valid_dataset=None,
-        dictionary=None,
         weight_aux_gen=params['weight_aux_gen'],
         weight_aux_nll=params['weight_aux_nll'],
         use_dropout=params['use_dropout'],
@@ -33,6 +31,7 @@ def main(job_id, params):
         kl_start=params['kl_start'],
         kl_rate=params['kl_rate'])
     return validerr
+
 
 if __name__ == '__main__':
     try:
