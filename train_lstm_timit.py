@@ -10,9 +10,9 @@ def main(job_id, params):
     print("Parameters:")
     pprint.pprint(params)
     validerr = train(
-        data_dir='experiments/data',
-        model_dir='experiments/timit',
-        log_dir='experiments/timit',
+        data_dir=params['data_dir'],
+        model_dir=params['model_dir'],
+        log_dir=params['log_dir'],
         reload_=params['reload'],
         dim_input=params['dim_input'],
         dim=params['dim'],
@@ -40,6 +40,14 @@ if __name__ == '__main__':
     except:
         pass
 
+    #
+    parser.add_argument('--philly_datadir', type=str, default='./experiments/data',
+                        nargs='?', help='path of the input data directory (HDFS)')
+    parser.add_argument('--philly_logdir', type=str, default='./experiments/timit',
+                        nargs='?', help='path of the log directory (NFS)')
+    parser.add_argument('--philly_modeldir', type=str, default='./experiments/timit',
+                        help='path of the output directory (HDFS)')
+
     parser = argparse.ArgumentParser("TIMIT experiments for VRNN with auxiliary costs.")
     parser.add_argument('--weight_aux_gen', type=float, default=0.)
     parser.add_argument('--weight_aux_nll', type=float, default=0.)
@@ -52,6 +60,9 @@ if __name__ == '__main__':
         'dim_proj': 512,
         'optimizer': 'adam',
         'decay_c': 0.,
+        'data_dir': args.philly_datadir,
+        'log_dir': args.philly_logdir,
+        'model_dir': args.philly_modeldir,
         'use_h_in_aux': args.use_h_in_aux,
         'weight_aux_gen': args.weight_aux_gen,
         'weight_aux_nll': args.weight_aux_nll,
