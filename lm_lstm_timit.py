@@ -10,7 +10,7 @@ import theano.tensor as tensor
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 
 import cPickle as pkl
-import ipdb
+from philly_utils import print_philly_hb
 import numpy
 import copy
 
@@ -879,6 +879,7 @@ def train(dim_input=200,          # input vector dimensionality
 
             # verbose
             if numpy.mod(uidx, dispFreq) == 0:
+                print_philly_hb()
                 checkpoint = time.time()
                 str1 = 'Epoch {:d}  Update {:d}  VaeCost {:.2f}  AuxCost {:.2f}  KldCost {:.2f}  TotCost {:.2f}  ElboCost {:.2f}  NllRev {:.2f}  NllGen {:.2f}  KL_start {:.2f} Speed {:.2f}it/s'.format(
                     eidx, uidx, np.mean(tr_costs[0]), np.mean(tr_costs[1]), np.mean(tr_costs[3]),

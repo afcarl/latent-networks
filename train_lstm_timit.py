@@ -41,14 +41,13 @@ if __name__ == '__main__':
         pass
 
     #
+    parser = argparse.ArgumentParser("TIMIT experiments for VRNN with auxiliary costs.")
     parser.add_argument('--philly_datadir', type=str, default='./experiments/data',
                         nargs='?', help='path of the input data directory (HDFS)')
     parser.add_argument('--philly_logdir', type=str, default='./experiments/timit',
                         nargs='?', help='path of the log directory (NFS)')
     parser.add_argument('--philly_modeldir', type=str, default='./experiments/timit',
                         help='path of the output directory (HDFS)')
-
-    parser = argparse.ArgumentParser("TIMIT experiments for VRNN with auxiliary costs.")
     parser.add_argument('--weight_aux_gen', type=float, default=0.)
     parser.add_argument('--weight_aux_nll', type=float, default=0.)
     parser.add_argument('--use_h_in_aux', action='store_true')
