@@ -19,7 +19,6 @@ import time
 
 from collections import OrderedDict
 
-#from char_data_iterator import TextIterator
 profile = False
 
 
@@ -493,10 +492,11 @@ def latent_lstm_layer(
 
             # concatenate with forward state
             if options['use_h_in_aux']:
-                aux_hid = tensor.concatenate([aux_hid, sbefore], axis=1)
+                disc_s_ = theano.gradient.disconnected_grad(sbefore)
+                aux_hid = tensor.concatenate([aux_hid, disc_s_], axis=1)
 
             aux_out = tensor.dot(aux_hid, aux_ff_2_w) + aux_ff_2_b
-            aux_out = T.clip(aux_out, -10., 10.)
+            aux_out = T.clip(aux_out, -8., 8.)
             aux_mu, aux_sigma = aux_out[:, :d_.shape[1]], aux_out[:, d_.shape[1]:]
             aux_mu = tensor.tanh(aux_mu)
             disc_d_ = theano.gradient.disconnected_grad(d_)
@@ -534,8 +534,7 @@ def latent_lstm_layer(
         rval = [h, c]
     else:
         if mask.ndim == 3 and mask.ndim == state_below.ndim:
-            mask = mask.reshape((mask.shape[0], \
-                                 mask.shape[1]*mask.shape[2])).dimshuffle(0, 1, 'x')
+            mask = mask.reshape((mask.shape[0], mask.shape[1] * mask.shape[2])).dimshuffle(0, 1, 'x')
         elif mask.ndim == 2:
             mask = mask.dimshuffle(0, 1, 'x')
 
@@ -656,7 +655,6 @@ def build_rev_model(tparams, options, x, y, x_mask):
 
 # build a training model
 def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
-    opt_ret = dict()
     # disconnecting reconstruction gradient from going in the backward encoder
     x_emb = get_layer('ff')[1](tparams, x, options, prefix='ff_in_lstm', activ='lrelu')
     rvals, updates_gen = get_layer('latent_lstm')[1](
@@ -731,7 +729,7 @@ def adam(lr, tparams, gshared, beta1=0.9, beta2=0.99, e=1e-5):
 
 
 def train(dim_input=200,          # input vector dimensionality
-          dim=1024,               # the number of LSTM units
+          dim=1024,               # the number of recurrent units
           dim_proj=512,           # the number of hidden units
           encoder='lstm',
           patience=10,            # early stopping patience
@@ -760,8 +758,8 @@ def train(dim_input=200,          # input vector dimensionality
     learn_h0 = False
     seed = 0.
 
-    desc = 'seed{}_aux_gen{}_aux_nll{}_aux_zh{}'.format(
-        seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux))
+    desc = 'seed{}_aux_gen{}_aux_nll{}_aux_zh{}_klrate{}'.format(
+        seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux), kl_rate)
     logs = '{}/{}_log.txt'.format(log_dir, desc)
     opts = '{}/{}_opts.pkl'.format(model_dir, desc)
 

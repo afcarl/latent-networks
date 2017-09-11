@@ -67,7 +67,7 @@ if __name__ == '__main__':
         'weight_aux_nll': args.weight_aux_nll,
         'use_dropout': False,
         'kl_start': 0.2,
-        'kl_rate': 0.0003,
+        'kl_rate': 0.00005,
         'dim_z': 256,
         'learning_rate': 0.001,
         'reload': False})
