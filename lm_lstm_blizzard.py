@@ -733,7 +733,7 @@ def train(dim_input=200,          # input vector dimensionality
 
     train_d_ = Iterator(train_data, batch_size, start=0, end=2040064)
     valid_d_ = Iterator(valid_data, batch_size, start=2040064, end=2152704)
-    test_d_ = Iterator(test_data, batch_size, start=2040064, end=2267008)
+    test_d_ = Iterator(test_data, batch_size, start=2152704, end=2267008)
 
     print('Building model')
     params = init_params(model_options)
