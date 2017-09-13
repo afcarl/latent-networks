@@ -731,9 +731,11 @@ def train(dim_input=200,          # input vector dimensionality
                                X_mean=X_mean,
                                X_std=X_std)
 
+    # The following numbers are for batch_size of 128.
+    assert batch_size == 128
     train_d_ = Iterator(train_data, batch_size, start=0, end=2040064)
     valid_d_ = Iterator(valid_data, batch_size, start=2040064, end=2152704)
-    test_d_ = Iterator(test_data, batch_size, start=2152704, end=2267008)
+    test_d_ = Iterator(test_data, batch_size, start=2152704, end=2267008-128)  # Use complete batch only.
 
     print('Building model')
     params = init_params(model_options)
