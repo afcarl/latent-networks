@@ -108,6 +108,15 @@ def load_params(path, params):
     return params
 
 
+def save_params(path, tparams):
+    params = {}
+    for kk, vv in tparams.iteritems():
+        params[kk] = vv.get_value()
+    outf = open(path, 'wb')
+    pkl.dump(params, outf)
+    outf.close()
+
+
 # layers: 'name': ('parameter initializer', 'feedforward')
 layers = {
     'ff': ('param_init_fflayer', 'fflayer'),
@@ -290,122 +299,122 @@ def fflayer(tparams, state_below, options, prefix='rconv',
 
 
 def param_init_lstm(options,
-                     params,
-                     prefix='lstm',
-                     nin=None,
-                     dim=None):
-     if nin is None:
-         nin = options['dim_proj']
+                    params,
+                    prefix='lstm',
+                    nin=None,
+                    dim=None):
+    if nin is None:
+        nin = options['dim_proj']
 
-     if dim is None:
-         dim = options['dim_proj']
+    if dim is None:
+        dim = options['dim_proj']
 
-     W = numpy.concatenate([norm_weight(nin,dim),
-                            norm_weight(nin,dim),
-                            norm_weight(nin,dim),
-                            norm_weight(nin,dim)],
-                            axis=1)
+    W = numpy.concatenate([norm_weight(nin, dim),
+                           norm_weight(nin, dim),
+                           norm_weight(nin, dim),
+                           norm_weight(nin, dim)],
+                           axis=1)
 
-     params[_p(prefix,'W')] = W
-     U = numpy.concatenate([ortho_weight(dim),
-                            ortho_weight(dim),
-                            ortho_weight(dim),
-                            ortho_weight(dim)],
-                            axis=1)
+    params[_p(prefix,'W')] = W
+    U = numpy.concatenate([ortho_weight(dim),
+                           ortho_weight(dim),
+                           ortho_weight(dim),
+                           ortho_weight(dim)],
+                           axis=1)
 
-     params[_p(prefix,'U')] = U
-     params[_p(prefix,'b')] = numpy.zeros((4 * dim,)).astype('float32')
+    params[_p(prefix,'U')] = U
+    params[_p(prefix,'b')] = numpy.zeros((4 * dim,)).astype('float32')
 
-     return params
+    return params
 
 def lstm_layer(tparams, state_below,
-                options,
-                prefix='lstm',
-                mask=None, one_step=False,
-                init_state=None,
-                init_memory=None,
-                nsteps=None,
-                **kwargs):
+               options,
+               prefix='lstm',
+               mask=None, one_step=False,
+               init_state=None,
+               init_memory=None,
+               nsteps=None,
+               **kwargs):
 
-     if nsteps is None:
-         nsteps = state_below.shape[0]
+    if nsteps is None:
+        nsteps = state_below.shape[0]
 
-     if state_below.ndim == 3:
-         n_samples = state_below.shape[1]
-     else:
-         n_samples = 1
+    if state_below.ndim == 3:
+        n_samples = state_below.shape[1]
+    else:
+        n_samples = 1
 
-     param = lambda name: tparams[_p(prefix, name)]
-     dim = param('U').shape[0]
+    param = lambda name: tparams[_p(prefix, name)]
+    dim = param('U').shape[0]
 
-     if mask is None:
-         mask = tensor.alloc(1., state_below.shape[0], 1)
+    if mask is None:
+        mask = tensor.alloc(1., state_below.shape[0], 1)
 
-     # initial/previous state
-     if init_state is None:
-         if not options['learn_h0']:
-             init_state = tensor.alloc(0., n_samples, dim)
-         else:
-             init_state0 = theano.shared(numpy.zeros((options['dim'])),
-                                  name=_p(prefix, "h0"))
-             init_state = tensor.alloc(init_state0, n_samples, dim)
-             tparams[_p(prefix, 'h0')] = init_state0
+    # initial/previous state
+    if init_state is None:
+        if not options['learn_h0']:
+            init_state = tensor.alloc(0., n_samples, dim)
+        else:
+            init_state0 = theano.shared(numpy.zeros((options['dim'])),
+                                 name=_p(prefix, "h0"))
+            init_state = tensor.alloc(init_state0, n_samples, dim)
+            tparams[_p(prefix, 'h0')] = init_state0
 
-     U = param('U')
-     b = param('b')
-     W = param('W')
-     non_seqs = [U, b, W]
+    U = param('U')
+    b = param('b')
+    W = param('W')
+    non_seqs = [U, b, W]
 
-     # initial/previous memory
-     if init_memory is None:
-         init_memory = tensor.alloc(0., n_samples, dim)
+    # initial/previous memory
+    if init_memory is None:
+        init_memory = tensor.alloc(0., n_samples, dim)
 
-     def _slice(_x, n, dim):
-         if _x.ndim == 3:
-             return _x[:, :, n*dim:(n+1)*dim]
-         return _x[:, n*dim:(n+1)*dim]
+    def _slice(_x, n, dim):
+        if _x.ndim == 3:
+            return _x[:, :, n*dim:(n+1)*dim]
+        return _x[:, n*dim:(n+1)*dim]
 
-     def _step(mask, sbelow, sbefore, cell_before, *args):
-         preact = tensor.dot(sbefore, param('U'))
-         preact += sbelow
-         preact += param('b')
+    def _step(mask, sbelow, sbefore, cell_before, *args):
+        preact = tensor.dot(sbefore, param('U'))
+        preact += sbelow
+        preact += param('b')
 
-         i = tensor.nnet.sigmoid(_slice(preact, 0, dim))
-         f = tensor.nnet.sigmoid(_slice(preact, 1, dim))
-         o = tensor.nnet.sigmoid(_slice(preact, 2, dim))
-         c = tensor.tanh(_slice(preact, 3, dim))
+        i = tensor.nnet.sigmoid(_slice(preact, 0, dim))
+        f = tensor.nnet.sigmoid(_slice(preact, 1, dim))
+        o = tensor.nnet.sigmoid(_slice(preact, 2, dim))
+        c = tensor.tanh(_slice(preact, 3, dim))
 
-         c = f * cell_before + i * c
-         c = mask * c + (1. - mask) * cell_before
-         h = o * tensor.tanh(c)
-         h = mask * h + (1. - mask) * sbefore
+        c = f * cell_before + i * c
+        c = mask * c + (1. - mask) * cell_before
+        h = o * tensor.tanh(c)
+        h = mask * h + (1. - mask) * sbefore
 
-         return h, c
+        return h, c
 
-     lstm_state_below = tensor.dot(state_below, param('W')) + param('b')
-     if state_below.ndim == 3:
-         lstm_state_below = lstm_state_below.reshape((state_below.shape[0],
-                                                      state_below.shape[1],
-                                                      -1))
-     if one_step:
-         mask = mask.dimshuffle(0, 'x')
-         h, c = _step(mask, lstm_state_below, init_state, init_memory)
-         rval = [h, c]
-     else:
-         if mask.ndim == 3 and mask.ndim == state_below.ndim:
-             mask = mask.reshape((mask.shape[0], \
-                                  mask.shape[1]*mask.shape[2])).dimshuffle(0, 1, 'x')
-         elif mask.ndim == 2:
-             mask = mask.dimshuffle(0, 1, 'x')
+    lstm_state_below = tensor.dot(state_below, param('W')) + param('b')
+    if state_below.ndim == 3:
+        lstm_state_below = lstm_state_below.reshape((state_below.shape[0],
+                                                     state_below.shape[1],
+                                                     -1))
+    if one_step:
+        mask = mask.dimshuffle(0, 'x')
+        h, c = _step(mask, lstm_state_below, init_state, init_memory)
+        rval = [h, c]
+    else:
+        if mask.ndim == 3 and mask.ndim == state_below.ndim:
+            mask = mask.reshape((mask.shape[0], \
+                                 mask.shape[1]*mask.shape[2])).dimshuffle(0, 1, 'x')
+        elif mask.ndim == 2:
+            mask = mask.dimshuffle(0, 1, 'x')
 
-         rval, updates = theano.scan(_step,
-                                     sequences=[mask, lstm_state_below],
-                                     outputs_info=[init_state, init_memory],
-                                     name=_p(prefix, '_layers'),
-                                     non_sequences=non_seqs,
-                                     strict=True,
-                                     n_steps=nsteps)
-     return [rval, updates]
+        rval, updates = theano.scan(_step,
+                                    sequences=[mask, lstm_state_below],
+                                    outputs_info=[init_state, init_memory],
+                                    name=_p(prefix, '_layers'),
+                                    non_sequences=non_seqs,
+                                    strict=True,
+                                    n_steps=nsteps)
+    return [rval, updates]
 
 
 def latent_lstm_layer(
@@ -540,7 +549,7 @@ def latent_lstm_layer(
 
         rval, updates = theano.scan(
             _step, sequences=[mask, lstm_state_below, back_states, gaussian_s],
-            outputs_info = [init_state, init_memory, None, None, None],
+            outputs_info=[init_state, init_memory, None, None, None],
             name=_p(prefix, '_layers'), non_sequences=non_seqs, strict=True, n_steps=nsteps)
     return [rval, updates]
 
@@ -662,7 +671,7 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
         prefix='encoder', mask=x_mask, gaussian_s=zmuv,
         back_states=states_rev)
 
-    states_gen, z, kld, rec_cost_rev = rvals[0], rvals[2], rvals[3], rvals[4]
+    states_gen, z, kld, rec_cost_rev = (rvals[0], rvals[2], rvals[3], rvals[4])
     # Compute parameters of the output distribution
     out_lstm = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_lstm', activ='linear')
     out_prev = get_layer('ff')[1](tparams, x_emb, options, prefix='ff_out_prev', activ='linear')
@@ -761,10 +770,21 @@ def train(dim_input=200,          # input vector dimensionality
     desc = 'seed{}_aux_gen{}_aux_nll{}_aux_zh{}_klrate{}'.format(
         seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux), kl_rate)
     logs = '{}/{}_log.txt'.format(log_dir, desc)
+    diag = '{}/{}_diag.pkl'.format(log_dir, desc)
     opts = '{}/{}_opts.pkl'.format(model_dir, desc)
+    pars = '{}/{}_pars.pkl'.format(model_dir, desc)
 
-    print("- log file: {}".format(logs))
+    print("- logs file: {}".format(logs))
     print("- opts file: {}".format(opts))
+    print("- pars file: {}".format(pars))
+    print("- diag file: {}".format(diag))
+
+    # save diagnostics into a pkl
+    diags = {
+        'train_costs': [[], [], [], [], [], [], []],
+        'valid_elbo': [],
+        'test_elbo': []
+    }
 
     # Model options
     model_options = locals().copy()
@@ -776,6 +796,13 @@ def train(dim_input=200,          # input vector dimensionality
 
     print('Building model')
     params = init_params(model_options)
+    # load model
+    if os.path.exists(pars):
+        print("Reloading model from {}".format(pars))
+        params = load_params(pars, params)
+    if os.path.exists(diag):
+        print("Reloading diagnostics from {}".format(diag))
+        diags = pkl.load(open(diag, "rb"))
     tparams = init_tparams(params)
 
     x = tensor.tensor3('x')
@@ -820,10 +847,7 @@ def train(dim_input=200,          # input vector dimensionality
     print('DONE.')
 
     print('- Starting optimization...')
-    history_errs = []
-    # reload history
-    if reload_ and os.path.exists(saveto):
-        history_errs = list(numpy.load(saveto)['history_errs'])
+    history_errs = diags['valid_elbo']
     best_p = None
     bad_count = 0
 
@@ -874,6 +898,7 @@ def train(dim_input=200,          # input vector dimensionality
             # average of last 10 batches
             for n in range(len(tr_costs)):
                 tr_costs[n] = tr_costs[n][-10:]
+                diags['train_costs'][n] = np.mean(tr_costs[n])
 
             # verbose
             if numpy.mod(uidx, dispFreq) == 0:
@@ -891,15 +916,25 @@ def train(dim_input=200,          # input vector dimensionality
         valid_err = pred_probs(f_log_probs, model_options, data, source='valid')
         test_err = pred_probs(f_log_probs, model_options, data, source='test')
         history_errs.append(valid_err)
-        str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err, test_err)
+        diags['valid_elbo'].append(valid_err)
+        diags['test_elbo'].append(test_err)
+
+        # save diags
+        diagf = open(diag, "wb")
+        pkl.dump(diags, diagf)
+        diagf.close()
 
         # decay learning rate if validation error increases
         if (old_valid_err < valid_err) and lrate > 0.0001:
             lrate = lrate / 2.0
+        else:
+            save_params(pars, tparams)
 
         old_valid_err = history_errs[-1]
-        print(str1)
+        str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err, test_err)
         log_file.write(str1 + '\n')
+        log_file.flush()
+        print(str1)
 
         # finish after this many updates
         if uidx >= finish_after:
