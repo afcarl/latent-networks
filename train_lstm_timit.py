@@ -48,6 +48,7 @@ if __name__ == '__main__':
                         nargs='?', help='path of the log directory (NFS)')
     parser.add_argument('--philly_modeldir', type=str, default='./experiments/timit',
                         help='path of the output directory (HDFS)')
+    parser.add_argument('--seed', type=int, default=1234)
     parser.add_argument('--weight_aux_gen', type=float, default=0.)
     parser.add_argument('--weight_aux_nll', type=float, default=0.)
     parser.add_argument('--use_h_in_aux', action='store_true')
@@ -58,6 +59,7 @@ if __name__ == '__main__':
         'dim': 1024,
         'dim_proj': 512,
         'optimizer': 'adam',
+        'seed': seed,
         'decay_c': 0.,
         'data_dir': args.philly_datadir,
         'log_dir': args.philly_logdir,

@@ -760,13 +760,12 @@ def train(dim_input=200,          # input vector dimensionality
           use_h_in_aux=False,
           weight_aux_gen=0.,
           weight_aux_nll=0.,
+          seed=0,
           dim_z=256,
           kl_start=0.2,
           kl_rate=0.0003):
 
     learn_h0 = False
-    seed = 0.
-
     desc = 'seed{}_aux_gen{}_aux_nll{}_aux_zh{}_klrate{}'.format(
         seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux), kl_rate)
     logs = '{}/{}_log.txt'.format(log_dir, desc)
@@ -783,7 +782,8 @@ def train(dim_input=200,          # input vector dimensionality
     diags = {
         'train_costs': [[], [], [], [], [], [], []],
         'valid_elbo': [],
-        'test_elbo': []
+        'test_elbo': [],
+        'kld': []
     }
 
     # Model options
@@ -847,7 +847,7 @@ def train(dim_input=200,          # input vector dimensionality
     print('DONE.')
 
     print('- Starting optimization...')
-    history_errs = diags['valid_elbo']
+    history_errs = [c for c in diags['valid_elbo']]
     best_p = None
     bad_count = 0
 
@@ -898,7 +898,7 @@ def train(dim_input=200,          # input vector dimensionality
             # average of last 10 batches
             for n in range(len(tr_costs)):
                 tr_costs[n] = tr_costs[n][-10:]
-                diags['train_costs'][n] = np.mean(tr_costs[n])
+                diags['train_costs'][n].append(np.mean(tr_costs[n]))
 
             # verbose
             if numpy.mod(uidx, dispFreq) == 0:
@@ -916,6 +916,7 @@ def train(dim_input=200,          # input vector dimensionality
         valid_err = pred_probs(f_log_probs, model_options, data, source='valid')
         test_err = pred_probs(f_log_probs, model_options, data, source='test')
         history_errs.append(valid_err)
+
         diags['valid_elbo'].append(valid_err)
         diags['test_elbo'].append(test_err)
 
