@@ -21,6 +21,7 @@ def main(job_id, params):
         dim_proj=params['dim_proj'],
         batch_size=128,  # As in SRNN.
         valid_batch_size=32,
+        seed=params['seed'],
         dispFreq=10,
         weight_aux_gen=params['weight_aux_gen'],
         weight_aux_nll=params['weight_aux_nll'],
@@ -49,6 +50,7 @@ if __name__ == '__main__':
                         help='path of the output directory (HDFS)')
     parser.add_argument('--weight_aux_gen', type=float, default=0.)
     parser.add_argument('--weight_aux_nll', type=float, default=0.)
+    parser.add_argument('--seed', type=int, default=1234)
     parser.add_argument('--use_h_in_aux', action='store_true')
     args = parser.parse_args()
 
@@ -58,6 +60,7 @@ if __name__ == '__main__':
         'dim_proj': 1024,  # As in SRNN.
         'optimizer': 'adam',
         'decay_c': 0.,
+        'seed': args.seed,
         'data_dir': args.philly_datadir,
         'log_dir': args.philly_logdir,
         'model_dir': args.philly_modeldir,

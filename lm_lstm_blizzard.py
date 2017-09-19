@@ -683,49 +683,56 @@ def train(dim_input=200,          # input vector dimensionality
           weight_aux_gen=0.,
           weight_aux_nll=0.,
           dim_z=256,
+          seed=1234,
           kl_start=0.2,
           kl_rate=0.0003):
 
     learn_h0 = False
-    seed = 0.
-
     desc = 'seed{}_aux_gen{}_aux_nll{}_aux_zh{}_klrate{}'.format(
         seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux), kl_rate)
     logs = '{}/{}_log.txt'.format(log_dir, desc)
+    diag = '{}/{}_diag.pkl'.format(log_dir, desc)
     opts = '{}/{}_opts.pkl'.format(model_dir, desc)
+    pars = '{}/{}_pars.pkl'.format(model_dir, desc)
 
-    print("- log file: {}".format(logs))
+    print("- logs file: {}".format(logs))
     print("- opts file: {}".format(opts))
+    print("- pars file: {}".format(pars))
+    print("- diag file: {}".format(diag))
 
     # Model options
     model_options = locals().copy()
     pkl.dump(model_options, open(opts, 'wb'))
     log_file = open(logs, 'w')
 
+    # save diagnostics into a pkl
+    diags = {
+        'train_costs': [[], [], [], [], [], [], []],
+        'valid_elbo': [],
+        'test_elbo': [],
+    }
 
     x_dim = 200
-    data_path = '/scratch/macote/blizzard_unseg/'
     file_name = 'blizzard_unseg_tbptt'
-
-    normal_params = np.load(data_path + file_name + '_normal.npz')
+    normal_params = np.load(data_dir + file_name + '_normal.npz')
     X_mean = normal_params['X_mean']
     X_std = normal_params['X_std']
     train_data = Blizzard_tbptt(name='train',
-                                path=data_path,
+                                path=data_dir,
                                 frame_size=x_dim,
                                 file_name=file_name,
                                 X_mean=X_mean,
                                 X_std=X_std)
 
     valid_data = Blizzard_tbptt(name='valid',
-                                path=data_path,
+                                path=data_dir,
                                 frame_size=x_dim,
                                 file_name=file_name,
                                 X_mean=X_mean,
                                 X_std=X_std)
 
     test_data = Blizzard_tbptt(name='test',
-                               path=data_path,
+                               path=data_dir,
                                frame_size=x_dim,
                                file_name=file_name,
                                X_mean=X_mean,
@@ -739,6 +746,13 @@ def train(dim_input=200,          # input vector dimensionality
 
     print('Building model')
     params = init_params(model_options)
+    # load model
+    if os.path.exists(pars):
+        print("Reloading model from {}".format(pars))
+        params = load_params(pars, params)
+    if os.path.exists(diag):
+        print("Reloading diagnostics from {}".format(diag))
+        diags = pkl.load(open(diag, "rb"))
     tparams = init_tparams(params)
 
     x = tensor.tensor3('x')
@@ -784,10 +798,7 @@ def train(dim_input=200,          # input vector dimensionality
     print('DONE.')
 
     print('- Starting optimization...')
-    history_errs = []
-    # reload history
-    if reload_ and os.path.exists(saveto):
-        history_errs = list(numpy.load(saveto)['history_errs'])
+    history_errs = [c for c in diags['valid_elbo']]
     best_p = None
     bad_count = 0
 
@@ -839,6 +850,7 @@ def train(dim_input=200,          # input vector dimensionality
             # average of last 10 batches
             for n in range(len(tr_costs)):
                 tr_costs[n] = tr_costs[n][-10:]
+                diags['train_costs'][n].append(np.mean(tr_costs[n]))
 
             # verbose
             if numpy.mod(uidx, dispFreq) == 0:
@@ -856,15 +868,23 @@ def train(dim_input=200,          # input vector dimensionality
         valid_err = pred_probs(f_log_probs, model_options, valid_d_, source='valid')
         test_err = pred_probs(f_log_probs, model_options, test_d_, source='test')
         history_errs.append(valid_err)
-        str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err, test_err)
+
+        diags['valid_elbo'].append(valid_err)
+        diags['test_elbo'].append(test_err)
+
+        # save diags
+        diagf = open(diag, "wb")
+        pkl.dump(diags, diagf)
+        diagf.close()
 
         # decay learning rate if validation error increases
         if (old_valid_err < valid_err) and lrate > 0.0001:
             lrate = lrate / 2.0
 
         old_valid_err = history_errs[-1]
-        print(str1)
+        str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err, test_err)
         log_file.write(str1 + '\n')
+        print(str1)
 
         # finish after this many updates
         if uidx >= finish_after:
