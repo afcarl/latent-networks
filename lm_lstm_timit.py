@@ -783,7 +783,6 @@ def train(dim_input=200,          # input vector dimensionality
         'train_costs': [[], [], [], [], [], [], []],
         'valid_elbo': [],
         'test_elbo': [],
-        'kld': []
     }
 
     # Model options
