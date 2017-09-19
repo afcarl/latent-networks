@@ -687,6 +687,7 @@ def train(dim_input=200,          # input vector dimensionality
           kl_start=0.2,
           kl_rate=0.0003):
 
+    numpy.random.seed(seed)
     learn_h0 = False
     desc = 'seed{}_aux_gen{}_aux_nll{}_aux_zh{}_klrate{}'.format(
         seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux), kl_rate)
