@@ -1,7 +1,6 @@
 from __future__ import division
 
 import os
-import ipdb
 import tables
 import fnmatch
 import numpy as np
@@ -756,4 +755,3 @@ if __name__ == "__main__":
     X_std = blizzard.X_std
     X = blizzard.data[0]
     batch = blizzard.slices(0, 100)
-    ipdb.set_trace()
