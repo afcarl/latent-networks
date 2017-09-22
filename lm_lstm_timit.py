@@ -131,12 +131,10 @@ def get_layer(name):
     return (eval(fns[0]), eval(fns[1]))
 
 
-# orthogonal initialization for weights
-# see Saxe et al. ICLR'14
-def ortho_weight(ndim):
+def ortho_weight(ndim, scale=1.1):
     W = numpy.random.randn(ndim, ndim)
     u, s, v = numpy.linalg.svd(W)
-    return u.astype('float32')
+    return u.astype('float32') * scale
 
 
 # weight initializer, normal by default
@@ -501,6 +499,7 @@ def latent_lstm_layer(
 
             # concatenate with forward state
             if options['use_h_in_aux']:
+                print("Using h_in_aux...")
                 disc_s_ = theano.gradient.disconnected_grad(sbefore)
                 aux_hid = tensor.concatenate([aux_hid, disc_s_], axis=1)
 
@@ -509,7 +508,7 @@ def latent_lstm_layer(
             aux_mu, aux_sigma = aux_out[:, :d_.shape[1]], aux_out[:, d_.shape[1]:]
             aux_mu = tensor.tanh(aux_mu)
             disc_d_ = theano.gradient.disconnected_grad(d_)
-            aux_cost = -log_prob_gaussian(disc_d_, aux_mu, aux_sigma)
+            aux_cost = -log_prob_gaussian(disc_d_, mean=aux_mu, log_var=aux_sigma)
             aux_cost = tensor.sum(aux_cost, axis=-1)
         else:
             tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_sigma)
