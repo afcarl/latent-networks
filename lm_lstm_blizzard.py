@@ -431,7 +431,6 @@ def latent_lstm_layer(
             aux_mu = tensor.tanh(aux_mu)
             disc_d_ = theano.gradient.disconnected_grad(d_)
             aux_cost = -log_prob_gaussian(disc_d_, aux_mu, aux_sigma)
-            #aux_cost = (disc_d_ - aux_mu) ** 2.0
             aux_cost = tensor.sum(aux_cost, axis=-1)
         else:
             tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_sigma)
