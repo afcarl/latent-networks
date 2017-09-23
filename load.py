@@ -32,7 +32,7 @@ def get_mnist_iterator(data, batch_size):
     data = shuffle_arr(data)[0]
     for i in range(0, len(data), batch_size):
         batch = data[i: i + batch_size]
-        batch = np.concatenate([np.zeros((batch_size, 1)), batch], axis=1).astype('int64')
+        batch = np.concatenate([np.zeros((batch.shape[0], 1)), batch], axis=1).astype('int64')
         x_mask = np.ones((batch.shape[0], 784)).astype('float32')
         x = batch[:, :-1].T
         y = batch[:, 1:].T
