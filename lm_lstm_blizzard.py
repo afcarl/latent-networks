@@ -16,7 +16,7 @@ import copy
 
 import warnings
 import time
-from rng import set_seed, py_rng, np_rng, cu_rng
+import rng
 from collections import OrderedDict
 from blizzard import Blizzard_tbptt
 from util import Iterator
@@ -126,7 +126,7 @@ def get_layer(name):
 # orthogonal initialization for weights
 # see Saxe et al. ICLR'14
 def ortho_weight(ndim):
-    W = np_rng.randn(ndim, ndim)
+    W = rng.np_rng.randn(ndim, ndim)
     u, s, v = numpy.linalg.svd(W)
     return u.astype('float32')
 
@@ -138,7 +138,7 @@ def norm_weight(nin, nout=None, scale=0.01, ortho=True):
     if nout == nin and ortho:
         W = ortho_weight(nin)
     else:
-        W = scale * np_rng.randn(nin, nout)
+        W = scale * rng.np_rng.randn(nin, nout)
     return W.astype('float32')
 
 
@@ -628,7 +628,7 @@ def pred_probs(f_log_probs, options, data, source='valid'):
         x_mask = np.ones((x.shape[0], x.shape[1]), dtype='float32')
         n_done += x.shape[1]
 
-        zmuv = np_rng.normal(loc=0.0, scale=1.0, size=(
+        zmuv = rng.np_rng.normal(loc=0.0, scale=1.0, size=(
             x.shape[0], x.shape[1], options['dim_z'])).astype('float32')
         elbo = f_log_probs(x, y, x_mask, zmuv)
         for val in elbo:
@@ -686,7 +686,7 @@ def train(dim_input=200,          # input vector dimensionality
           kl_start=0.2,
           kl_rate=0.0003):
 
-    set_seed(seed)
+    rng.set_seed(seed)
     learn_h0 = False
     desc = 'seed{:d}_aux-gen{}_aux-nll{}_aux-zh{}_klrate{}'.format(
         seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux), kl_rate)
@@ -826,7 +826,7 @@ def train(dim_input=200,          # input vector dimensionality
             kl_start = min(1., kl_start + kl_rate)
 
             # build samples for the reparametrization trick
-            zmuv = np_rng.normal(loc=0.0, scale=1.0, size=(x.shape[0], x.shape[1], model_options['dim_z'])).astype('float32')
+            zmuv = rng.np_rng.normal(loc=0.0, scale=1.0, size=(x.shape[0], x.shape[1], model_options['dim_z'])).astype('float32')
             # propagate samples forward into the network
             vae_cost_np, aux_cost_np, tot_cost_np, kld_cost_np, elbo_cost_np, nll_rev_cost_np, nll_gen_cost_np, not_finite = \
                 f_prop(x, y, x_mask, zmuv, np.float32(kl_start))
