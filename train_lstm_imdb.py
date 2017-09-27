@@ -21,6 +21,7 @@ def main(job_id, params):
         use_iwae=params['use_iwae'],
         use_h_in_aux=params['use_h_in_aux'],
         num_nf_layers=params['num_nf_layers'],
+        seed=params['seed'],
         batch_size=32,
         valid_batch_size=32,
         dispFreq=10,
@@ -46,7 +47,8 @@ if __name__ == '__main__':
     parser.add_argument('--use_iwae', action='store_true')
     parser.add_argument('--use_h_in_aux', action='store_true')
     parser.add_argument('--num_nf_layers', type=int, default=0)
-    parser.add_argument('--dropout', type=float, default=0.2)
+    parser.add_argument('--seed', type=int, default=1234)
+    parser.add_argument('--dropout', type=float, default=0.)
     args = parser.parse_args()
 
     main(0, {
@@ -54,6 +56,7 @@ if __name__ == '__main__':
         'log_dir': args.philly_logdir,
         'data_dir': args.philly_datadir,
         'use_iwae': args.use_iwae,
+        'seed': args.seed,
         'num_nf_layers': args.num_nf_layers,
         'weight_aux': args.weight_aux,
         'use_h_in_aux': args.use_h_in_aux,

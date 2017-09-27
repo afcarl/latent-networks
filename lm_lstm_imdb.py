@@ -10,6 +10,7 @@ import theano.tensor as tensor
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from lm_data import IMDB_JMARS
 
+import rng
 import cPickle as pkl
 import numpy
 import copy
@@ -22,11 +23,9 @@ from philly_utils import print_philly_hb
 from collections import OrderedDict
 
 profile = False
-seed = 1234
 num_iwae_samps = 25       # evaluate with 25 samples per sentence
 num_iwae_iters = 1        # 1 iteration of iwae
 num_iwae_samps_train = 5  # train with 5 samples of iwae
-numpy.random.seed(seed)
 is_train = tensor.scalar('is_train')
 
 
@@ -195,7 +194,7 @@ def get_layer(name):
 # orthogonal initialization for weights
 # see Saxe et al. ICLR'14
 def ortho_weight(ndim):
-    W = numpy.random.randn(ndim, ndim)
+    W = rng.np_rng.randn(ndim, ndim)
     u, s, v = numpy.linalg.svd(W)
     return u.astype('float32')
 
@@ -207,7 +206,7 @@ def norm_weight(nin, nout=None, scale=0.01, ortho=True):
     if nout == nin and ortho:
         W = ortho_weight(nin)
     else:
-        W = scale * numpy.random.randn(nin, nout)
+        W = scale * rng.np_rng.randn(nin, nout)
     return W.astype('float32')
 
 
@@ -751,7 +750,7 @@ def build_sampler(tparams, options, trng, provide_z=False):
     last_word.tag.test_value = -1 * np.ones((2,), dtype="int64")
     init_state.tag.test_value = np.zeros((2, options['dim']), dtype="float32")
     init_memory.tag.test_value = np.zeros((2, options['dim']), dtype="float32")
-    gaussian_sampled.tag.test_value = np.random.randn(2, 100).astype("float32")
+    gaussian_sampled.tag.test_value = rng.np_rng.randn(2, 100).astype("float32")
 
     # if it's the first word, emb should be all zero
     x_emb = get_layer('ff')[1](
@@ -813,12 +812,12 @@ def beam_sample(tparams, f_next, options, trng=None, maxlen=30,
 
     for ii in range(maxlen):
         if zmuv is None:
-            zmuv_t = numpy.random.normal(
+            zmuv_t = rng.np_rng.normal(
                 loc=0.0, scale=1.0,
                 size=(next_w.shape[0], options['dim_z'])).astype('float32')
         else:
             if ii >= zmuv.shape[0]:
-                zmuv_t = numpy.random.normal(
+                zmuv_t = rng.np_rng.normal(
                     loc=0.0, scale=1.0,
                     size=(next_w.shape[0], options['dim_z'])).astype('float32')
             else:
@@ -929,12 +928,12 @@ def gen_sample(tparams, f_next, options, trng=None, maxlen=30,
 
     for ii in range(maxlen):
         if zmuv is None:
-            zmuv_t = numpy.random.normal(
+            zmuv_t = rng.np_rng.normal(
                 loc=0.0, scale=1.0,
                 size=(next_w.shape[0], options['dim_z'])).astype('float32')
         else:
             if ii >= zmuv.shape[0]:
-                zmuv_t = numpy.random.normal(
+                zmuv_t = rng.np_rng.normal(
                     loc=0.0, scale=1.0,
                     size=(next_w.shape[0], options['dim_z'])).astype('float32')
             else:
@@ -962,7 +961,7 @@ def gen_sample(tparams, f_next, options, trng=None, maxlen=30,
             next_pp = numpy.sort(next_p, axis=1)[:, ::-1][:, :10]
             next_pp = next_pp / numpy.sum(next_pp, axis=1)[:, None]
             for i in range(next_p.shape[0]):
-                nw_i = numpy.random.choice(next_pi[i], 1, p=next_pp[i, :])
+                nw_i = rng.np_rng.choice(next_pi[i], 1, p=next_pp[i, :])
                 nw.append(nw_i[0])
             nw = numpy.asarray(nw)
 
@@ -999,7 +998,7 @@ def pred_probs(f_log_probs, f_iwae_eval, options, data, source='valid'):
         n_done += numpy.sum(x_mask)
         n_steps = x.shape[0]
         n_samps = x.shape[1]
-        zmuv = numpy.random.normal(
+        zmuv = rng.np_rng.normal(
             loc=0.0, scale=1.0,
             size=(n_steps, n_samps, options['dim_z']))
         zmuv = zmuv.astype('float32')
@@ -1057,6 +1056,7 @@ def train(dim_input=200,  # input vector dimensionality
           optimizer='adam',
           batch_size=16,
           valid_batch_size=16,
+          seed=1234,
           data_dir='experiments/data',
           model_dir='experiments/imdb',
           log_dir='experiments/imdb',
@@ -1075,10 +1075,10 @@ def train(dim_input=200,  # input vector dimensionality
           weight_aux=0.,
           kl_rate=0.0003):
 
+    rng.set_seed(seed)
     dim_z = 64
     dim_mlp = dim
     learn_h0 = False
-
     desc = 'seed{}_aux{}_aux_zh{}_iwae{}_nfl{}_dr{:.1f}'.format(
         seed, weight_aux, str(use_h_in_aux), str(use_iwae),
         str(num_nf_layers), dropout)
@@ -1229,7 +1229,7 @@ def train(dim_input=200,  # input vector dimensionality
 
             ud_start = time.time()
             # compute cost, grads and copy grads to shared variables
-            zmuv = numpy.random.normal(loc=0.0, scale=1.0, size=(
+            zmuv = rng.np_rng.normal(loc=0.0, scale=1.0, size=(
                 n_steps, n_samps, model_options['dim_z'])).astype('float32')
             vae_cost_np, aux_cost_np, tot_cost_np, kld_cost_np, \
                 elbo_cost_np, nll_rev_cost_np, nll_gen_cost_np, not_finite_np = \
