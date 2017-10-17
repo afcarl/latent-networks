@@ -9,9 +9,7 @@ import theano.tensor as T
 import theano.tensor as tensor
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 
-from philly_utils import print_philly_hb
 import cPickle as pkl
-import rng
 import numpy
 import copy
 import warnings
@@ -131,20 +129,20 @@ def get_layer(name):
     return (eval(fns[0]), eval(fns[1]))
 
 
-def ortho_weight(ndim, scale=1.1):
-    W = rng.np_rng.randn(ndim, ndim)
+def ortho_weight(rng, ndim, scale=1.1):
+    W = rng.randn(ndim, ndim)
     u, s, v = numpy.linalg.svd(W)
     return u.astype('float32') * scale
 
 
 # weight initializer, normal by default
-def norm_weight(nin, nout=None, scale=0.01, ortho=True):
+def norm_weight(rng, nin, nout=None, scale=0.01, ortho=True):
     if nout is None:
         nout = nin
     if nout == nin and ortho:
         W = ortho_weight(nin)
     else:
-        W = scale * rng.np_rng.randn(nin, nout)
+        W = scale * rng.randn(nin, nout)
     return W.astype('float32')
 
 
@@ -280,11 +278,10 @@ class TimitData():
 # feedforward layer: affine transformation + point-wise nonlinearity
 def param_init_fflayer(options, params, prefix='ff', nin=None, nout=None,
                        ortho=True):
-    if nin is None:
-        nin = options['dim_proj']
-    if nout is None:
-        nout = options['dim_proj']
-    params[_p(prefix, 'W')] = norm_weight(nin, nout, scale=0.01, ortho=ortho)
+    assert nin is not None
+    assert nout is not None
+    rng = options['rng']
+    params[_p(prefix, 'W')] = norm_weight(rng, nin, nout, scale=0.01, ortho=ortho)
     params[_p(prefix, 'b')] = numpy.zeros((nout,)).astype('float32')
 
     return params
@@ -302,28 +299,24 @@ def param_init_lstm(options,
                     prefix='lstm',
                     nin=None,
                     dim=None):
-    if nin is None:
-        nin = options['dim_proj']
-
-    if dim is None:
-        dim = options['dim_proj']
-
-    W = numpy.concatenate([norm_weight(nin, dim),
-                           norm_weight(nin, dim),
-                           norm_weight(nin, dim),
-                           norm_weight(nin, dim)],
+    rng = options['rng']
+    assert nin is not None
+    assert dim is not None
+    W = numpy.concatenate([norm_weight(rng, nin, dim),
+                           norm_weight(rng, nin, dim),
+                           norm_weight(rng, nin, dim),
+                           norm_weight(rng, nin, dim)],
                            axis=1)
 
     params[_p(prefix,'W')] = W
-    U = numpy.concatenate([ortho_weight(dim),
-                           ortho_weight(dim),
-                           ortho_weight(dim),
-                           ortho_weight(dim)],
+    U = numpy.concatenate([ortho_weight(rng, dim),
+                           ortho_weight(rng, dim),
+                           ortho_weight(rng, dim),
+                           ortho_weight(rng, dim)],
                            axis=1)
 
     params[_p(prefix,'U')] = U
     params[_p(prefix,'b')] = numpy.zeros((4 * dim,)).astype('float32')
-
     return params
 
 def lstm_layer(tparams, state_below,
@@ -501,11 +494,12 @@ def latent_lstm_layer(
             # concatenate with forward state
             if options['use_h_in_aux']:
                 print("Using h_in_aux...")
-                disc_s_ = theano.gradient.disconnected_grad(sbefore)
-                aux_hid = tensor.concatenate([aux_hid, disc_s_], axis=1)
+                # disc_s_ = theano.gradient.disconnected_grad(sbefore)
+ 		disc_s_ = sbefore
+		aux_hid = tensor.concatenate([aux_hid, disc_s_], axis=1)
 
-            aux_out = tensor.dot(aux_hid, aux_ff_2_w) + aux_ff_2_b
-            aux_out = T.clip(aux_out, -8., 8.)
+	    aux_out = tensor.dot(aux_hid, aux_ff_2_w) + aux_ff_2_b
+            aux_out = T.clip(aux_out, -10., 10.)
             aux_mu, aux_sigma = aux_out[:, :d_.shape[1]], aux_out[:, d_.shape[1]:]
             aux_mu = tensor.tanh(aux_mu)
             disc_d_ = theano.gradient.disconnected_grad(d_)
@@ -556,6 +550,7 @@ def latent_lstm_layer(
 
 # initialize all parameters
 def init_params(options):
+    rng = options['rng']
     params = OrderedDict()
     params = get_layer('latent_lstm')[0](options, params,
                                          prefix='encoder',
@@ -574,10 +569,10 @@ def init_params(options):
                                 nin=options['dim'],
                                 nout=2 * options['dim_input'],
                                 ortho=False)
-    U = numpy.concatenate([norm_weight(options['dim_z'], options['dim']),
-                           norm_weight(options['dim_z'], options['dim']),
-                           norm_weight(options['dim_z'], options['dim']),
-                           norm_weight(options['dim_z'], options['dim'])], axis=1)
+    U = numpy.concatenate([norm_weight(rng, options['dim_z'], options['dim']),
+                           norm_weight(rng, options['dim_z'], options['dim']),
+                           norm_weight(rng, options['dim_z'], options['dim']),
+                           norm_weight(rng, options['dim_z'], options['dim'])], axis=1)
     params[_p('z_cond', 'W')] = U
 
     params = get_layer(options['encoder'])[0](options, params,
@@ -695,7 +690,7 @@ def ELBOcost(rec_cost, kld, kld_weight=1.):
     return rec_cost + kld_weight * kld
 
 
-def pred_probs(f_log_probs, options, data, source='valid'):
+def pred_probs(f_log_probs, options, data, rng, source='valid'):
     rvals = []
     n_done = 0
 
@@ -707,7 +702,7 @@ def pred_probs(f_log_probs, options, data, source='valid'):
         x_mask = x_mask.transpose(1, 0)
         n_done += x.shape[1]
 
-        zmuv = rng.np_rng.normal(loc=0.0, scale=1.0, size=(
+        zmuv = rng.normal(loc=0.0, scale=1.0, size=(
             x.shape[0], x.shape[1], options['dim_z'])).astype('float32')
         elbo = f_log_probs(x, y, x_mask, zmuv)
         for val in elbo:
@@ -765,10 +760,10 @@ def train(dim_input=200,          # input vector dimensionality
           kl_start=0.2,
           kl_rate=0.0003):
 
-    rng.set_seed(seed)
+    rng = np.random.RandomState(seed)
     learn_h0 = False
     desc = 'seed{:d}_aux-gen{}_aux-nll{}_aux-zh{}_klrate{}'.format(
-            seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux), kl_rate)
+		    seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux), kl_rate)
     logs = '{}/{}_log.txt'.format(log_dir, desc)
     diag = '{}/{}_diag.pkl'.format(log_dir, desc)
     opts = '{}/{}_opts.pkl'.format(model_dir, desc)
@@ -797,12 +792,13 @@ def train(dim_input=200,          # input vector dimensionality
     print('Building model')
     params = init_params(model_options)
     # load model
-    if os.path.exists(pars):
-        print("Reloading model from {}".format(pars))
-        params = load_params(pars, params)
-    if os.path.exists(diag):
-        print("Reloading diagnostics from {}".format(diag))
-        diags = pkl.load(open(diag, "rb"))
+    if reload_:
+    	if os.path.exists(pars):
+	    print("Reloading model from {}".format(pars))
+	    params = load_params(pars, params)
+	if os.path.exists(diag):
+	    print("Reloading diagnostics from {}".format(diag))
+	    diags = pkl.load(open(diag, "rb"))
     tparams = init_tparams(params)
 
     x = tensor.tensor3('x')
@@ -861,11 +857,12 @@ def train(dim_input=200,          # input vector dimensionality
     start = time.time()
 
     for eidx in range(max_epochs):
-        print("Epoch: {}".format(eidx))
+	print("Epoch: {}, PROGRESS: {:2.2f}%".format(eidx, 100 * float(eidx + 1)/float(max_epochs)))
         n_samples = 0
         tr_costs = [[], [], [], [], [], [], []]
 
-        for x, y, x_mask in data.get_train_batch():
+        
+	for x, y, x_mask in data.get_train_batch():
             # Transpose data to have the time steps on dimension 0.
             x = x.transpose(1, 0, 2)
             y = y.transpose(1, 0, 2)
@@ -876,7 +873,7 @@ def train(dim_input=200,          # input vector dimensionality
             kl_start = min(1., kl_start + kl_rate)
 
             # build samples for the reparametrization trick
-            zmuv = rng.np_rng.normal(loc=0.0, scale=1.0, size=(x.shape[0], x.shape[1], model_options['dim_z'])).astype('float32')
+            zmuv = rng.normal(loc=0.0, scale=1.0, size=(x.shape[0], x.shape[1], model_options['dim_z'])).astype('float32')
             # propagate samples forward into the network
             vae_cost_np, aux_cost_np, tot_cost_np, kld_cost_np, elbo_cost_np, nll_rev_cost_np, nll_gen_cost_np, not_finite = \
                 f_prop(x, y, x_mask, zmuv, np.float32(kl_start))
@@ -902,7 +899,6 @@ def train(dim_input=200,          # input vector dimensionality
 
             # verbose
             if numpy.mod(uidx, dispFreq) == 0:
-                print_philly_hb()
                 checkpoint = time.time()
                 str1 = 'Epoch {:d}  Update {:d}  VaeCost {:.2f}  AuxCost {:.2f}  KldCost {:.2f}  TotCost {:.2f}  ElboCost {:.2f}  NllRev {:.2f}  NllGen {:.2f}  KL_start {:.2f} Speed {:.2f}it/s'.format(
                     eidx, uidx, np.mean(tr_costs[0]), np.mean(tr_costs[1]), np.mean(tr_costs[3]),
@@ -913,8 +909,8 @@ def train(dim_input=200,          # input vector dimensionality
                 log_file.flush()
 
         print('Starting validation...')
-        valid_err = pred_probs(f_log_probs, model_options, data, source='valid')
-        test_err = pred_probs(f_log_probs, model_options, data, source='test')
+        valid_err = pred_probs(f_log_probs, model_options, data, rng, source='valid')
+        test_err = pred_probs(f_log_probs, model_options, data, rng, source='test')
         history_errs.append(valid_err)
 
         diags['valid_elbo'].append(valid_err)
