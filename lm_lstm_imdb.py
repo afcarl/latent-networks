@@ -489,7 +489,7 @@ def latent_lstm_layer(
         preact = tensor.dot(h_tm1, U) + sbelow + gen_out
 
         i = tensor.nnet.sigmoid(_slice(preact, 0, options['dim']))
-        f = tensor.nnet.sigmoid(_slice(preact, 1, options['dim']))
+        f = tensor.nnet.sigmoid(_slice(preact, 1, options['dim']) + 1.)
         o = tensor.nnet.sigmoid(_slice(preact, 2, options['dim']))
         c = tensor.tanh(_slice(preact, 3, options['dim']))
 
@@ -555,34 +555,34 @@ def init_params(options):
     params = \
         get_layer('ff')[0](
             options, params, prefix='pri_ff_1',
-            nin=options['dim'], nout=options['dim_mlp'],
+            nin=options['dim'], nout=options['dim_proj'],
             ortho=False)
     params = \
         get_layer('ff')[0](
             options, params, prefix='pri_ff_2',
-            nin=options['dim_mlp'], nout=2 * options['dim_z'],
+            nin=options['dim_proj'], nout=2 * options['dim_z'],
             ortho=False)
     # posterior network
     params = \
         get_layer('ff')[0](
             options, params, prefix='inf_ff_1',
-            nin=2 * options['dim'], nout=options['dim_mlp'],
+            nin=2 * options['dim'], nout=options['dim_proj'],
             ortho=False)
     params = \
         get_layer('ff')[0](
             options, params, prefix='inf_ff_2',
-            nin=options['dim_mlp'], nout=2 * options['dim_z'],
+            nin=options['dim_proj'], nout=2 * options['dim_z'],
             ortho=False)
     # Auxiliary network
     params = \
         get_layer('ff')[0](
             options, params, prefix='aux_ff_1',
-            nin=options['dim_z'], nout=options['dim_mlp'],
+            nin=options['dim_z'], nout=options['dim_proj'],
             ortho=False)
     if options['use_h_in_aux']:
-        dim_aux = options['dim_mlp'] + options['dim']
+        dim_aux = options['dim_proj'] + options['dim']
     else:
-        dim_aux = options['dim']
+        dim_aux = options['dim_proj']
     params = \
         get_layer('ff')[0](
             options, params, prefix='aux_ff_2',
@@ -593,13 +593,13 @@ def init_params(options):
     params = \
         get_layer('ff')[0](
             options, params, prefix='gen_ff_1',
-            nin=options['dim_z'], nout=options['dim_mlp'],
+            nin=options['dim_z'], nout=options['dim_proj'],
             ortho=False)
     U = numpy.concatenate([
-        norm_weight(options['rng'], options['dim_mlp'], options['dim']),
-        norm_weight(options['rng'], options['dim_mlp'], options['dim']),
-        norm_weight(options['rng'], options['dim_mlp'], options['dim']),
-        norm_weight(options['rng'], options['dim_mlp'], options['dim'])],
+        norm_weight(options['rng'], options['dim_proj'], options['dim']),
+        norm_weight(options['rng'], options['dim_proj'], options['dim']),
+        norm_weight(options['rng'], options['dim_proj'], options['dim']),
+        norm_weight(options['rng'], options['dim_proj'], options['dim'])],
         axis=1)
     params[_p('gen_ff_2', 'W')] = U
     return params
@@ -652,7 +652,7 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     x_emb = get_layer('ff')[1](tparams, x, options, prefix='ff_in_lstm', activ='lambda x: x')
     # small dropout
     trng = RandomStreams(options['seed'])
-    print('Dropout set to {:.2f}'.format(options['dropout']))
+    print('- Embedding dropout set to {:.2f}'.format(options['dropout']))
     x_emb = dropout_layer(x_emb, is_train, trng, p=options['dropout'])
     rvals, updates_gen = get_layer('latent_lstm')[1](
        tparams, state_below=x_emb, options=options,
@@ -928,12 +928,13 @@ def pred_probs(f_log_probs, f_iwae_eval, options, data, source='valid'):
         else:
             train_batches = []
             iterator = data.get_train_batch()
-            for i in range(100):
+            for i in range(500):
                 train_batches.append(next(iterator))
             return train_batches
 
     data_iterator = get_data(data, source)
     for num, (x, y, x_mask) in enumerate(data_iterator):
+        # just test on 500 batches
         x = x.transpose(1, 0)
         y = y.transpose(1, 0)
         x_mask = x_mask.transpose(1, 0)
@@ -985,13 +986,12 @@ def adam(lr, tparams, gshared, beta1=0.9, beta2=0.99, e=1e-5):
     return f_update
 
 
-def train(dim_input=200,  # input vector dimensionality
-          dim=2000,  # the number of GRU units
-          dim_proj=600,  # the number of GRU units
+def train(dim_input=-1,  # input vector dimensionality
+          dim=500,  # the number of GRU units
+          dim_proj=300,  # the number of GRU units
           encoder='lstm',
           patience=10,  # early stopping patience
           max_epochs=10,
-          finish_after=10000000,  # finish after this many updates
           dispFreq=100,
           lrate=0.0002,
           maxlen=100,  # maximum length of the description
@@ -1016,8 +1016,7 @@ def train(dim_input=200,  # input vector dimensionality
           weight_aux=0.,
           kl_rate=0.0003):
 
-    dim_z = 64
-    dim_mlp = dim
+    dim_z = 32
     learn_h0 = False
     desc = 'seed{}_aux{}_aux_zh{}_iwae{}'.format(
         seed, weight_aux, str(use_h_in_aux), str(use_iwae))
@@ -1073,45 +1072,51 @@ def train(dim_input=200,  # input vector dimensionality
             log_pxIz, log_pz, log_qzIx, z, _ = \
             build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
 
+    npreds = T.sum(x_mask, axis=0)
     if model_options['use_iwae']:
+        batch_size = T.cast(x.shape[1] / num_iwae_samps_train, 'int32')
+        bpreds = T.sum(x_mask[:, :batch_size], axis=0)
         log_ws = log_pxIz - log_qzIx + log_pz
-        log_ws_matrix = log_ws.reshape((x.shape[1] / num_iwae_samps_train, num_iwae_samps_train))
+        batch_size = x.shape[1]
+        log_ws_matrix = T.reshape(log_ws, (-1, num_iwae_samps_train))
         log_ws_minus_max = log_ws_matrix - tensor.max(log_ws_matrix, axis=1, keepdims=True)
         ws = tensor.exp(log_ws_minus_max)
         ws_norm = ws / T.sum(ws, axis=1, keepdims=True)
         ws_norm = theano.gradient.disconnected_grad(ws_norm)
-        vae_cost = -tensor.sum(log_ws_matrix * ws_norm, axis=1).mean() + 0. * weight_f
-        elbo_cost = -log_mean_exp(log_ws_matrix, axis=1).mean()
+        vae_cost = -tensor.sum(log_ws_matrix * ws_norm, axis=1) / bpreds + 0. * weight_f
+        elbo_cost = -log_mean_exp(log_ws_matrix, axis=1) / bpreds
     else:
-        vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f).mean()
-        elbo_cost = ELBOcost(nll_gen, kld, kld_weight=1.).mean()
+        vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f) / npreds
+        elbo_cost = ELBOcost(nll_gen, kld, kld_weight=1.) / npreds
 
-    aux_cost = (numpy.float32(weight_aux) * (rec_cost_rev + nll_rev)).mean()
+    aux_cost = (numpy.float32(weight_aux) * (rec_cost_rev + nll_rev) / npreds).mean()
+    vae_cost = vae_cost.mean()
+    elbo_cost = elbo_cost.mean()
     reg_cost = 1e-6 * tensor.sum([tensor.sum(p ** 2) for p in tparams.values()])
     tot_cost = vae_cost + aux_cost + reg_cost
-    nll_gen_cost = nll_gen.mean()
-    nll_rev_cost = nll_rev.mean()
     kld_cost = kld.mean()
+    nll_gen_cost = (nll_gen / npreds).mean()
+    nll_rev_cost = (nll_rev / npreds).mean()
 
     nbatch = 0
     for batch in data.get_valid_batch():
         nbatch += 1
-    print('Total valid batches: {}'.format(nbatch))
+    print('- Total valid batches: {}'.format(nbatch))
 
     print('- Building f_log_probs...')
     inps = [x, y, x_mask, zmuv, weight_f]
     f_log_probs = theano.function(
-       inps[:-1], ELBOcost(nll_gen, kld, kld_weight=1.),
-       updates=(updates_gen + updates_rev), profile=profile,
-       givens={is_train: numpy.float32(0.)})
+        inps[:-1], ELBOcost(nll_gen, kld, kld_weight=1.),
+        updates=(updates_gen + updates_rev), profile=profile,
+        givens={is_train: numpy.float32(0.)})
     print('- Building f_iwae_eval...')
     f_iwae_eval = theano.function(
-       inps[:-1], [log_pxIz, log_pz, log_qzIx],
-       updates=(updates_gen + updates_rev),
-       givens={is_train: numpy.float32(0.)})
+        inps[:-1], [log_pxIz, log_pz, log_qzIx],
+        updates=(updates_gen + updates_rev),
+        givens={is_train: numpy.float32(0.)})
     print('- Building gradient...')
     grads = tensor.grad(tot_cost, itemlist(tparams))
-    all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 100.)
+    all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 10.)
     # update function
     all_gshared = [theano.shared(p.get_value() * 0., name='%s_grad' % k)
                    for k, p in tparams.items()]
@@ -1142,8 +1147,6 @@ def train(dim_input=200,  # input vector dimensionality
 
     # epochs loop
     for eidx in range(1, max_epochs + 1):
-        print("Epoch: {}, PROGRESS: {:2.2f}%".format(
-            eidx, 100 * float(eidx)/float(max_epochs)))
         n_samples = 0
         n_batch = 0
         tr_costs = [[], [], [], [], [], [], []]
@@ -1196,25 +1199,27 @@ def train(dim_input=200,  # input vector dimensionality
             # verbose
             if numpy.mod(uidx, dispFreq) == 0:
                 end = time.time()
-                str1 = 'Epoch {:d}/{:d}  Batch {:d}/{:d}  Update {:d}  VaeCost {:.2f}  AuxCost {:.2f}  KldCost {:.2f}  TotCost {:.2f}  ElboCost {:.2f}  NllRev {:.2f}  NllGen {:.2f}  KL_start {:.2f}  Speed {:.2f}ms/batch'.format(
-                    eidx, max_epochs, n_batch, num_train_batches, uidx, np.mean(tr_costs[0]), np.mean(tr_costs[1]), np.mean(tr_costs[3]),
-                    np.mean(tr_costs[2]), np.mean(tr_costs[4]), np.mean(tr_costs[5]), np.mean(tr_costs[6]),
-                    kl_start, (end - start) / float(dispFreq))
+                str1 = '| Epoch {:2d}/{:2d} | Batch {:5d}/{:5d} | Update {:8d} | VaeCost {:5.2f} ' \
+                    '| AuxCost {:5.2f} | KldCost {:5.2f} | TotCost {:5.2f} | ElboCost {:5.2f} ' \
+                    '| NllRev {:5.2f} | NllGen {:5.2f} | ppl {:3.2f} | KL_start {:1.2f} '     \
+                    '| Speed {:1.2f}ms/batch | PROGRESS {:2.2f}% |'.format(
+                        eidx, max_epochs, n_batch, num_train_batches, uidx, np.mean(tr_costs[0]),
+                        np.mean(tr_costs[1]), np.mean(tr_costs[3]), np.mean(tr_costs[2]), np.mean(tr_costs[4]),
+                        np.mean(tr_costs[5]), np.mean(tr_costs[6]), np.exp(np.mean(tr_costs[4])), kl_start,
+                        (end - start) / float(dispFreq), (float(uidx) / num_total_batches) * 100.)
                 print(str1)
                 log_file.write(str1 + '\n')
                 log_file.flush()
                 start = time.time()
 
-        print('Starting validation...')
-        train_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='train')
-        str1 = 'Train ELBO: {:2.2f}, IWAE: {:2.2f}'.format(train_err[0], train_err[1])
         valid_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='valid')
-        str2 = 'Valid ELBO: {:2.2f}, IWAE: {:2.2f}'.format(valid_err[0], valid_err[1])
         test_err = pred_probs(f_log_probs, f_iwae_eval, model_options, data, source='test')
-        str3 = 'Test ELBO:  {:2.2f}, IWAE: {:2.2f}'.format(test_err[0], test_err[1])
-        str4 = '\n'.join([str1, str2, str3])
-        print(str4)
-        log_file.write(str4 + '\n')
+        str1 = '| valid (elbo, iwae): {:4.2f}, {:4.2f} | test (elbo, iwae): {:4.2f}, {:4.2f} |'.format(
+            valid_err[0], valid_err[1], test_err[0], test_err[1])
+        print('-' * len(str1))
+        print(str1)
+        print('-' * len(str1))
+        log_file.write(str1 + '\n')
 
         diags['valid_elbo'].append(valid_err)
         diags['test_elbo'].append(test_err)
@@ -1231,11 +1236,6 @@ def train(dim_input=200,  # input vector dimensionality
             # Save best model and best error
             best_valid_err = valid_err[1]
             save_params(pars, tparams)
-
-        # finish after this many updates
-        if uidx >= finish_after:
-            print('Finishing after %d iterations!' % uidx)
-            break
 
     return best_valid_err
 
