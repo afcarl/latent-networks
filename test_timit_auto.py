@@ -25,11 +25,9 @@ def get_free_gpuid():
 
 
 seeds = ["42", "144", "13"]
-tasks = ["--weight_aux_nll 0.005 --weight_aux_gen 0.005 --use_h_in_aux",
-      "--weight_aux_nll 0.0005 --weight_aux_gen 0.0005",
-      "--weight_aux_nll 0.0005 --weight_aux_gen 0.0005 --use_h_in_aux",
-      "--weight_aux_nll 0.007 --weight_aux_gen 0.007",
-      "--weight_aux_nll 0.007 --weight_aux_gen 0.007 --use_h_in_aux"]
+tasks = ["--weight_aux_nll 0.009 --weight_aux_gen 0.009 --use_h_in_aux",
+         "--weight_aux_nll 0.015 --weight_aux_gen 0.015 --use_h_in_aux",
+	 "--weight_aux_nll 0.025 --weight_aux_gen 0.025 --use_h_in_aux"]
 model_type = "model"
 base_dir = "./"
 compile_dir = "/scratch/alsordon/theano/compile"

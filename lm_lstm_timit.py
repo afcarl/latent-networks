@@ -490,12 +490,10 @@ def latent_lstm_layer(
 
             aux_hid = tensor.dot(tild_z_t, aux_ff_1_w) + aux_ff_1_b
             aux_hid = lrelu(aux_hid)
-
             # concatenate with forward state
             if options['use_h_in_aux']:
                 print("Using h_in_aux...")
- 		disc_s_ = sbefore
-		aux_hid = tensor.concatenate([aux_hid, disc_s_], axis=1)
+		aux_hid = tensor.concatenate([aux_hid, sbefore], axis=1)
 
 	    aux_out = tensor.dot(aux_hid, aux_ff_2_w) + aux_ff_2_b
             aux_out = T.clip(aux_out, -10., 10.)

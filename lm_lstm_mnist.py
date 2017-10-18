@@ -452,8 +452,7 @@ def latent_lstm_layer(
 
             # concatenate with forward state
             if options['use_h_in_aux']:
-                disc_s_ = theano.gradient.disconnected_grad(sbefore)
-                aux_hid = tensor.concatenate([aux_hid, disc_s_], axis=1)
+                aux_hid = tensor.concatenate([aux_hid, sbefore], axis=1)
 
             aux_out = tensor.dot(aux_hid, aux_ff_2_w) + aux_ff_2_b
             aux_out = T.clip(aux_out, -8., 8.)
