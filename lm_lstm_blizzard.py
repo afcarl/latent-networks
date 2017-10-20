@@ -273,7 +273,7 @@ def train(dim_input=200,          # input vector dimensionality
           kl_rate=0.0003):
 
     rng = numpy.random.RandomState(seed)
-    carry_h0 = True
+    carry_h0 = False  # no difference in performance
     desc = 'seed{:d}_aux-gen{}_aux-nll{}_aux-zh{}_klrate{}'.format(
         seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux), kl_rate)
     logs = '{}/{}_log.txt'.format(log_dir, desc)
@@ -340,7 +340,6 @@ def train(dim_input=200,          # input vector dimensionality
     zmuv = tensor.tensor3('zmuv')
     weight_f = tensor.scalar('weight_f')
     lr = tensor.scalar('lr')
-    reset_state = tensor.scalar('reset_state')
 
     # build the symbolic computational graph
     nll_rev, states_rev, updates_rev = \
@@ -362,10 +361,14 @@ def train(dim_input=200,          # input vector dimensionality
         inps[:-1], ELBOcost(nll_gen, kld, kld_weight=1.),
         updates=(updates_gen + updates_rev), profile=profile)
 
-    print('- Building update init state...')
-    init_state_shared = tparams[parname('encoder', 'init_state')]
-    reset_updates = [(init_state_shared, init_state_shared * np.float32(0.))]
-    f_reset_states = theano.function([], [], updates=reset_updates)
+    if model_options.get('carry_h0', False):
+        print('- Building update init state...')
+        init_state_shared = tparams[parname('encoder', 'init_state')]
+        reset_updates = [(init_state_shared, init_state_shared * np.float32(0.))]
+        f_reset_states = theano.function([], [], updates=reset_updates)
+    else:
+        def f_reset_states():
+            return
 
     print('- Building gradient...')
     grads = tensor.grad(tot_cost, itemlist(tparams))
