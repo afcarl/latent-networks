@@ -22,7 +22,7 @@ def main(job_id, params):
         batch_size=128,  # As in SRNN.
         valid_batch_size=32,
         seed=params['seed'],
-        dispFreq=10,
+        dispFreq=50,
         weight_aux_gen=params['weight_aux_gen'],
         weight_aux_nll=params['weight_aux_nll'],
         use_dropout=params['use_dropout'],
