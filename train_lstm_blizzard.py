@@ -34,12 +34,6 @@ def main(job_id, params):
 
 
 if __name__ == '__main__':
-    try:
-        # Created experiments folder, if needed.
-        os.makedirs("./experiments/blizzard/")
-    except:
-        pass
-
     #
     parser = argparse.ArgumentParser("BLIZZARD experiments for VRNN with auxiliary costs.")
     parser.add_argument('--philly_datadir', type=str, default='./experiments/data',
@@ -53,6 +47,12 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=1234)
     parser.add_argument('--use_h_in_aux', action='store_true')
     args = parser.parse_args()
+
+    try:
+        # Created experiments folder, if needed.
+        os.makedirs(args.philly_logdir)
+    except:
+        pass
 
     main(0, {
         'dim_input': 200,

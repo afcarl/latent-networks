@@ -64,74 +64,8 @@ class Iterator(object):
             start = self.start
             end = self.end - self.end % self.batch_size
             for idx in xrange(start, end, self.batch_size):
-                yield [self.data.slices(idx, idx + self.batch_size), self.data.slices(idx + 1, idx + self.batch_size +1)]
-
-
-# initialize all parameters
-def init_params(options):
-    rng = options['rng']
-    params = OrderedDict()
-    params = get_layer('latent_lstm')[0](options, params,
-                                         prefix='encoder',
-                                         nin=options['dim_proj'],
-                                         dim=options['dim'])
-    params = get_layer('ff')[0](options, params, prefix='ff_in_lstm',
-                                nin=options['dim_input'], nout=options['dim_proj'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_lstm',
-                                nin=options['dim'], nout=options['dim'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_prev',
-                                nin=options['dim_proj'],
-                                nout=options['dim'], ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_mus',
-                                nin=options['dim'],
-                                nout=2 * options['dim_input'],
-                                ortho=False)
-    U = numpy.concatenate([norm_weight(rng, options['dim_z'], options['dim']),
-                           norm_weight(rng, options['dim_z'], options['dim']),
-                           norm_weight(rng, options['dim_z'], options['dim']),
-                           norm_weight(rng, options['dim_z'], options['dim'])], axis=1)
-    params[parname('z_cond', 'W')] = U
-
-    params = get_layer(options['encoder'])[0](options, params,
-                                              prefix='encoder_r',
-                                              nin=options['dim_proj'],
-                                              dim=options['dim'])
-    # readout
-    params = get_layer('ff')[0](options, params, prefix='ff_in_lstm_r',
-                                nin=options['dim_input'], nout=options['dim_proj'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_lstm_r',
-                                nin=options['dim'], nout=options['dim'],
-                                ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_prev_r',
-                                nin=options['dim_proj'],
-                                nout=options['dim'], ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='ff_out_mus_r',
-                                nin=options['dim'],
-                                nout=2 * options['dim_input'],
-                                ortho=False)
-    # Prior Network params
-    params = get_layer('ff')[0](options, params, prefix='pri_ff_1', nin=options['dim'], nout=options['dim_proj'], ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='pri_ff_2', nin=options['dim_proj'], nout=2 * options['dim_z'], ortho=False)
-    # Inference network params
-    params = get_layer('ff')[0](options, params, prefix='inf_ff_1', nin=2 * options['dim'], nout=options['dim_proj'], ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='inf_ff_2', nin=options['dim_proj'], nout=2 * options['dim_z'], ortho=False)
-    # Auxiliary network params
-    params = \
-        get_layer('ff')[0](options, params, prefix='aux_ff_1',
-                           nin=options['dim_z'], nout=options['dim_proj'],
-                           ortho=False)
-    if options['use_h_in_aux']:
-        dim_aux = options['dim_proj'] + options['dim']
-    else:
-        dim_aux = options['dim_proj']
-    params = \
-        get_layer('ff')[0](options, params, prefix='aux_ff_2',
-                           nin=dim_aux, nout=2 * options['dim'],
-                           ortho=False)
-    return params
+                yield [self.data.slices(idx, idx + self.batch_size),
+                        self.data.slices(idx + 1, idx + self.batch_size + 1)]
 
 
 def build_rev_model(tparams, options, x, y, x_mask):
@@ -172,7 +106,8 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
         prefix='encoder', mask=x_mask, gaussian_s=zmuv,
         back_states=states_rev)
 
-    states_gen, z, kld, rec_cost_rev = (rvals[0], rvals[2], rvals[3], rvals[4])
+    states_gen, cells_gen, z, kld, rec_cost_rev = (
+            rvals[0], rvals[1], rvals[2], rvals[3], rvals[4])
     # Compute parameters of the output distribution
     out_lstm = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_lstm', activ='linear')
     out_prev = get_layer('ff')[1](tparams, x_emb, options, prefix='ff_out_prev', activ='linear')
@@ -188,6 +123,78 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     kld = (kld * x_mask).sum(0)
     rec_cost_rev = (rec_cost_rev * x_mask).sum(0)
     return nll_gen, states_gen, kld, rec_cost_rev, updates_gen
+
+
+# initialize all parameters
+def init_params(options):
+    rng = options['rng']
+    params = OrderedDict()
+    params = get_layer('latent_lstm')[0](options, params,
+                                         prefix='encoder',
+                                         nin=options['dim_proj'],
+                                         dim=options['dim'])
+    params = get_layer('ff')[0](options, params, prefix='ff_in_lstm',
+                                nin=options['dim_input'], nout=options['dim_proj'],
+                                ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='ff_out_lstm',
+                                nin=options['dim'], nout=options['dim'],
+                                ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='ff_out_prev',
+                                nin=options['dim_proj'],
+                                nout=options['dim'], ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='ff_out_mus',
+                                nin=options['dim'],
+                                nout=2 * options['dim_input'],
+                                ortho=False)
+    params = get_layer(options['encoder'])[0](options, params,
+                                              prefix='encoder_r',
+                                              nin=options['dim_proj'],
+                                              dim=options['dim'])
+    # readout
+    params = get_layer('ff')[0](options, params, prefix='ff_in_lstm_r',
+                                nin=options['dim_input'], nout=options['dim_proj'],
+                                ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='ff_out_lstm_r',
+                                nin=options['dim'], nout=options['dim'],
+                                ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='ff_out_prev_r',
+                                nin=options['dim_proj'],
+                                nout=options['dim'], ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='ff_out_mus_r',
+                                nin=options['dim'],
+                                nout=2 * options['dim_input'],
+                                ortho=False)
+    # Prior Network params
+    params = get_layer('ff')[0](options, params, prefix='pri_ff_1', nin=options['dim'] + options['dim_proj'], nout=options['dim_proj'], ortho=False)
+    params = get_layer('ff')[0](options, params, prefix='pri_ff_2', nin=options['dim_proj'], nout=2 * options['dim_z'], ortho=False)
+    # Inference network params
+    params = get_layer('ff')[0](
+            options, params, prefix='inf_ff_1', nin=2 * options['dim'] + options['dim_proj'],
+            nout=options['dim_proj'], ortho=False)
+    params = get_layer('ff')[0](
+            options, params, prefix='inf_ff_2', nin=options['dim_proj'],
+            nout=2 * options['dim_z'], ortho=False)
+    # Auxiliary network params
+    params = \
+        get_layer('ff')[0](options, params, prefix='aux_ff_1',
+                           nin=options['dim_z'], nout=options['dim_proj'],
+                           ortho=False)
+    if options['use_h_in_aux']:
+        dim_aux = options['dim_proj'] + options['dim']
+    else:
+        dim_aux = options['dim_proj']
+    params = \
+        get_layer('ff')[0](options, params, prefix='aux_ff_2',
+                           nin=dim_aux, nout=2 * options['dim'],
+                           ortho=False)
+    U = numpy.concatenate([
+        norm_weight(rng, options['dim_z'], options['dim']),
+        norm_weight(rng, options['dim_z'], options['dim']),
+        norm_weight(rng, options['dim_z'], options['dim']),
+        norm_weight(rng, options['dim_z'], options['dim'])],
+        axis=1)
+    params[parname('z_cond', 'W')] = U
+    return params
 
 
 def ELBOcost(rec_cost, kld, kld_weight=1.):
@@ -266,7 +273,7 @@ def train(dim_input=200,          # input vector dimensionality
           kl_rate=0.0003):
 
     rng = numpy.random.RandomState(seed)
-    learn_h0 = False
+    carry_h0 = True
     desc = 'seed{:d}_aux-gen{}_aux-nll{}_aux-zh{}_klrate{}'.format(
         seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux), kl_rate)
     logs = '{}/{}_log.txt'.format(log_dir, desc)
@@ -333,6 +340,7 @@ def train(dim_input=200,          # input vector dimensionality
     zmuv = tensor.tensor3('zmuv')
     weight_f = tensor.scalar('weight_f')
     lr = tensor.scalar('lr')
+    reset_state = tensor.scalar('reset_state')
 
     # build the symbolic computational graph
     nll_rev, states_rev, updates_rev = \
@@ -354,6 +362,11 @@ def train(dim_input=200,          # input vector dimensionality
         inps[:-1], ELBOcost(nll_gen, kld, kld_weight=1.),
         updates=(updates_gen + updates_rev), profile=profile)
 
+    print('- Building update init state...')
+    init_state_shared = tparams[parname('encoder', 'init_state')]
+    reset_updates = [(init_state_shared, init_state_shared * np.float32(0.))]
+    f_reset_states = theano.function([], [], updates=reset_updates)
+
     print('- Building gradient...')
     grads = tensor.grad(tot_cost, itemlist(tparams))
     all_grads, non_finite, clipped = gradient_clipping(grads, tparams, 100.)
@@ -362,8 +375,10 @@ def train(dim_input=200,          # input vector dimensionality
                    for k, p in tparams.iteritems()]
     all_gsup = [(gs, g) for gs, g in zip(all_gshared, all_grads)]
     # forward pass + gradients
-    outputs = [vae_cost, aux_cost, tot_cost, kld_cost, elbo_cost, nll_rev_cost, nll_gen_cost, non_finite]
+    outputs = [vae_cost, aux_cost, tot_cost, kld_cost, elbo_cost,
+               nll_rev_cost, nll_gen_cost, non_finite]
     print('- Building f_prop...')
+    all_updates = all_gsup + updates_gen.items() + updates_rev.items()
     f_prop = theano.function(inps, outputs, updates=all_gsup)
     print('- Building f_update...')
     f_update = eval(optimizer)(lr, tparams, all_gshared)
@@ -385,6 +400,7 @@ def train(dim_input=200,          # input vector dimensionality
         print("Epoch: {}".format(eidx))
         n_samples = 0
         tr_costs = [[], [], [], [], [], [], []]
+        f_reset_states()
 
         for data_ in train_d_:
             x = data_[0][0]
@@ -436,7 +452,9 @@ def train(dim_input=200,          # input vector dimensionality
                 log_file.flush()
 
         print('Starting validation...')
+        f_reset_states()
         valid_err = pred_probs(f_log_probs, model_options, valid_d_, source='valid')
+        f_reset_states()
         test_err = pred_probs(f_log_probs, model_options, test_d_, source='test')
         history_errs.append(valid_err)
 
@@ -462,12 +480,6 @@ def train(dim_input=200,          # input vector dimensionality
             print('Finishing after %d iterations!' % uidx)
             break
 
-    valid_err = pred_probs(f_log_probs, model_options, valid_d_, source='valid')
-    test_err = pred_probs(f_log_probs, model_options, test_d_, source='test')
-    str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err, test_err)
-    print(str1)
-    log_file.write(str1 + '\n')
-    log_file.close()
     return valid_err
 
 

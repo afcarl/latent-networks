@@ -14,6 +14,7 @@ import time
 
 from collections import OrderedDict
 from utils import *
+from model_utils import *
 
 profile = False
 
@@ -73,7 +74,8 @@ class TimitData():
         for idx in chunk(indices, n=self.batch_size):
             u_batch, x_batch = u[idx], x[idx]
             if mask is None:
-                mask_batch = np.ones((x_batch.shape[0], x_batch.shape[1]), dtype='float32')
+                mask_batch = np.ones((x_batch.shape[0], x_batch.shape[1]),
+                        dtype='float32')
             else:
                 mask_batch = mask[idx]
             yield u_batch, x_batch, mask_batch
@@ -87,7 +89,6 @@ class TimitData():
     def get_test_batch(self):
         return iter(self._iter_data(self.u_test, self.x_test,
                                     mask=self.mask_test))
-
 
 
 # initialize all parameters
@@ -111,16 +112,11 @@ def init_params(options):
                                 nin=options['dim'],
                                 nout=2 * options['dim_input'],
                                 ortho=False)
-    U = numpy.concatenate([norm_weight(rng, options['dim_z'], options['dim']),
-                           norm_weight(rng, options['dim_z'], options['dim']),
-                           norm_weight(rng, options['dim_z'], options['dim']),
-                           norm_weight(rng, options['dim_z'], options['dim'])], axis=1)
-    params[parname('z_cond', 'W')] = U
-
-    params = get_layer(options['encoder'])[0](options, params,
-                                              prefix='encoder_r',
-                                              nin=options['dim_proj'],
-                                              dim=options['dim'])
+    params = get_layer(options['encoder'])[0](
+            options, params,
+            prefix='encoder_r',
+            nin=options['dim_proj'],
+            dim=options['dim'])
     # readout
     params = get_layer('ff')[0](options, params, prefix='ff_in_lstm_r',
                                 nin=options['dim_input'], nout=options['dim_proj'],
@@ -136,10 +132,16 @@ def init_params(options):
                                 nout=2 * options['dim_input'],
                                 ortho=False)
     # Prior Network params
-    params = get_layer('ff')[0](options, params, prefix='pri_ff_1', nin=options['dim'], nout=options['dim_proj'], ortho=False)
-    params = get_layer('ff')[0](options, params, prefix='pri_ff_2', nin=options['dim_proj'], nout=2 * options['dim_z'], ortho=False)
+    params = get_layer('ff')[0](
+            options, params, prefix='pri_ff_1',
+            nin=options['dim'] + options['dim_proj'], nout=options['dim_proj'], ortho=False)
+    params = get_layer('ff')[0](
+            options, params, prefix='pri_ff_2', nin=options['dim_proj'], nout=2 * options['dim_z'], ortho=False)
     # Inference network params
-    params = get_layer('ff')[0](options, params, prefix='inf_ff_1', nin=2 * options['dim'], nout=options['dim_proj'], ortho=False)
+    params = get_layer('ff')[0](
+            options, params, prefix='inf_ff_1',
+            nin=(2 * options['dim'] + options['dim_proj']),
+            nout=options['dim_proj'], ortho=False)
     params = get_layer('ff')[0](options, params, prefix='inf_ff_2', nin=options['dim_proj'], nout=2 * options['dim_z'], ortho=False)
     # Auxiliary network params
     params = \
@@ -151,9 +153,17 @@ def init_params(options):
     else:
         dim_aux = options['dim_proj']
     params = \
-        get_layer('ff')[0](options, params, prefix='aux_ff_2',
-                           nin=dim_aux, nout=2 * options['dim'],
-                           ortho=False)
+        get_layer('ff')[0](
+                options, params, prefix='aux_ff_2',
+                nin=dim_aux, nout=2 * options['dim'],
+                ortho=False)
+    U = numpy.concatenate([
+        norm_weight(rng, options['dim_z'], options['dim']),
+        norm_weight(rng, options['dim_z'], options['dim']),
+        norm_weight(rng, options['dim_z'], options['dim']),
+        norm_weight(rng, options['dim_z'], options['dim'])],
+        axis=1)
+    params[parname('z_cond', 'W')] = U
     return params
 
 
@@ -194,8 +204,8 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
         tparams, state_below=x_emb, options=options,
         prefix='encoder', mask=x_mask, gaussian_s=zmuv,
         back_states=states_rev)
-
-    states_gen, z, kld, rec_cost_rev = (rvals[0], rvals[2], rvals[3], rvals[4])
+    states_gen, cells_gen, z, kld, rec_cost_rev = (
+            rvals[0], rvals[1], rvals[2], rvals[3], rvals[4])
     # Compute parameters of the output distribution
     out_lstm = get_layer('ff')[1](tparams, states_gen, options, prefix='ff_out_lstm', activ='linear')
     out_prev = get_layer('ff')[1](tparams, x_emb, options, prefix='ff_out_prev', activ='linear')
@@ -290,9 +300,9 @@ def train(dim_input=200,          # input vector dimensionality
           kl_rate=0.0003):
 
     rng = np.random.RandomState(seed)
-    learn_h0 = False
+    carry_h0 = False
     desc = 'seed{:d}_aux-gen{}_aux-nll{}_aux-zh{}_klrate{}'.format(
-		    seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux), kl_rate)
+            seed, weight_aux_gen, weight_aux_nll, str(use_h_in_aux), kl_rate)
     logs = '{}/{}_log.txt'.format(log_dir, desc)
     diag = '{}/{}_diag.pkl'.format(log_dir, desc)
     opts = '{}/{}_opts.pkl'.format(model_dir, desc)
@@ -335,10 +345,24 @@ def train(dim_input=200,          # input vector dimensionality
         build_rev_model(tparams, model_options, x, y, x_mask)
     nll_gen, states_gen, kld, rec_cost_rev, updates_gen = \
         build_gen_model(tparams, model_options, x, y, x_mask, zmuv, states_rev)
+    print('- Update list')
+    print(updates_gen)
+    print(updates_rev)
+
+    if model_options.get('carry_h0', False):
+        print('- Building update init state...')
+        init_state_shared = tparams[parname('encoder', 'init_state')]
+        reset_updates = [(init_state_shared, init_state_shared * np.float32(0.))]
+        f_reset_states = theano.function([], [], updates=reset_updates)
+    else:
+        def f_reset_states():
+            return
 
     vae_cost = ELBOcost(nll_gen, kld, kld_weight=weight_f).mean()
     elbo_cost = ELBOcost(nll_gen, kld, kld_weight=1.).mean()
-    aux_cost = (numpy.float32(weight_aux_gen) * rec_cost_rev + weight_aux_nll * nll_rev).mean()
+    aux_cost = (
+            numpy.float32(weight_aux_gen) * rec_cost_rev
+            + weight_aux_nll * nll_rev).mean()
     tot_cost = (vae_cost + aux_cost)
     nll_gen_cost = nll_gen.mean()
     nll_rev_cost = nll_rev.mean()
@@ -359,6 +383,7 @@ def train(dim_input=200,          # input vector dimensionality
     # forward pass + gradients
     outputs = [vae_cost, aux_cost, tot_cost, kld_cost, elbo_cost, nll_rev_cost, nll_gen_cost, non_finite]
     print('- Building f_prop...')
+    all_updates = all_gsup + updates_gen.items() + updates_rev.items()
     f_prop = theano.function(inps, outputs, updates=all_gsup)
     print('- Building f_update...')
     f_update = eval(optimizer)(lr, tparams, all_gshared)
@@ -379,12 +404,12 @@ def train(dim_input=200,          # input vector dimensionality
     start = time.time()
 
     for eidx in range(max_epochs):
-	print("Epoch: {}, PROGRESS: {:2.2f}%".format(eidx, 100 * float(eidx + 1)/float(max_epochs)))
+        print("Epoch: {}".format(eidx))
         n_samples = 0
         tr_costs = [[], [], [], [], [], [], []]
+        f_reset_states()
 
-        
-	for x, y, x_mask in data.get_train_batch():
+        for x, y, x_mask in data.get_train_batch():
             # Transpose data to have the time steps on dimension 0.
             x = x.transpose(1, 0, 2)
             y = y.transpose(1, 0, 2)
@@ -431,7 +456,9 @@ def train(dim_input=200,          # input vector dimensionality
                 log_file.flush()
 
         print('Starting validation...')
+        f_reset_states()
         valid_err = pred_probs(f_log_probs, model_options, data, rng, source='valid')
+        f_reset_states()
         test_err = pred_probs(f_log_probs, model_options, data, rng, source='test')
         history_errs.append(valid_err)
 
@@ -459,13 +486,6 @@ def train(dim_input=200,          # input vector dimensionality
         if uidx >= finish_after:
             print('Finishing after %d iterations!' % uidx)
             break
-
-    valid_err = pred_probs(f_log_probs, model_options, data, source='valid')
-    test_err = pred_probs(f_log_probs, model_options, data, source='test')
-    str1 = 'Valid/Test ELBO: {:.2f}, {:.2f}'.format(valid_err, test_err)
-    print(str1)
-    log_file.write(str1 + '\n')
-    log_file.close()
     return valid_err
 
 

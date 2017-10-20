@@ -11,10 +11,13 @@ import numpy
 import copy
 import warnings
 import time
-
 from collections import OrderedDict
 
 profile = False
+
+# some input flags
+t_reset_states = T.scalar('reset_states')
+
 
 def gradient_clipping(grads, tparams, clip_c=100):
     g2 = 0.
@@ -266,15 +269,7 @@ def lstm_layer(tparams, state_below,
     if mask is None:
         mask = tensor.alloc(1., state_below.shape[0], 1)
 
-    # initial/previous state
-    if init_state is None:
-        if not options['learn_h0']:
-            init_state = tensor.alloc(0., n_samples, dim)
-        else:
-            init_state0 = theano.shared(numpy.zeros((options['dim'])),
-                                 name=parname(prefix, "h0"))
-            init_state = tensor.alloc(init_state0, n_samples, dim)
-            tparams[parname(prefix, 'h0')] = init_state0
+    init_state = tensor.alloc(0., n_samples, dim)
 
     U = param('U')
     b = param('b')
@@ -290,20 +285,19 @@ def lstm_layer(tparams, state_below,
             return _x[:, :, n*dim:(n+1)*dim]
         return _x[:, n*dim:(n+1)*dim]
 
-    def _step(mask, sbelow, sbefore, cell_before, *args):
-        preact = tensor.dot(sbefore, param('U'))
+    def _step(mask, sbelow, h_tm1, c_tm1, *args):
+        preact = tensor.dot(h_tm1, param('U'))
         preact += sbelow
-        preact += param('b')
 
         i = tensor.nnet.sigmoid(_slice(preact, 0, dim))
         f = tensor.nnet.sigmoid(_slice(preact, 1, dim))
         o = tensor.nnet.sigmoid(_slice(preact, 2, dim))
         c = tensor.tanh(_slice(preact, 3, dim))
 
-        c = f * cell_before + i * c
-        c = mask * c + (1. - mask) * cell_before
+        c = f * c_tm1 + i * c
+        c = mask * c + (1. - mask) * c_tm1
         h = o * tensor.tanh(c)
-        h = mask * h + (1. - mask) * sbefore
+        h = mask * h + (1. - mask) * h_tm1
 
         return h, c
 
@@ -335,10 +329,9 @@ def lstm_layer(tparams, state_below,
 
 def latent_lstm_layer(
         tparams, state_below,
-        options, prefix='lstm', back_states = None,
+        options, prefix='lstm', back_states=None,
         gaussian_s=None, mask=None, one_step=False,
-        init_state=None, init_memory=None, nsteps=None,
-        **kwargs):
+        init_state=None, nsteps=None, **kwargs):
 
     if nsteps is None:
         nsteps = state_below.shape[0]
@@ -356,18 +349,21 @@ def latent_lstm_layer(
 
     # initial/previous state
     if init_state is None:
-        if not options['learn_h0']:
-            init_state = tensor.alloc(0., n_samples, dim)
+        if options.get('carry_h0', False):
+            print('Carrying states over...')
+            init_ary = numpy.zeros((
+                options['batch_size'], 2 * options['dim'])).astype('float32')
+            init_state = theano.shared(
+                    init_ary, name=parname(prefix, 'init_state'))
+            tparams[parname(prefix, 'init_state')] = init_state
         else:
-            init_state0 = theano.shared(numpy.zeros((options['dim'])),
-                                        name=parname(prefix, "h0"))
-            init_state = tensor.alloc(init_state0, n_samples, dim)
-            tparams[parname(prefix, 'h0')] = init_state0
+            init_state = tensor.alloc(0., n_samples, 2 * dim)
+
+    init_h0 = init_state[:, :dim]
+    init_c0 = init_state[:, dim:]
 
     U = param('U')
-    b = param('b')
-    W = param('W')
-    non_seqs = [U, b, W, tparams[parname('z_cond', 'W')],
+    non_seqs = [U, tparams[parname('z_cond', 'W')],
                 tparams[parname('pri_ff_1', 'W')],
                 tparams[parname('pri_ff_1', 'b')],
                 tparams[parname('pri_ff_2', 'W')],
@@ -381,43 +377,43 @@ def latent_lstm_layer(
                 tparams[parname('aux_ff_2', 'W')],
                 tparams[parname('aux_ff_2', 'b')]]
 
-    # initial/previous memory
-    if init_memory is None:
-        init_memory = tensor.alloc(0., n_samples, dim)
-
     def _slice(_x, n, dim):
         if _x.ndim == 3:
             return _x[:, :, n * dim:(n + 1) * dim]
         return _x[:, n * dim:(n + 1) * dim]
 
-    def _step(mask, sbelow, d_, g_s, sbefore, cell_before,
-              U, b, W, W_cond,
-              pri_ff_1_w, pri_ff_1_b,
+    def _step(mask, xbelow, sbelow, d_, zmuv, h_tm1, c_tm1,
+              U, W_cond, pri_ff_1_w, pri_ff_1_b,
               pri_ff_2_w, pri_ff_2_b,
               inf_ff_1_w, inf_ff_1_b,
               inf_ff_2_w, inf_ff_2_b,
               aux_ff_1_w, aux_ff_1_b,
               aux_ff_2_w, aux_ff_2_b):
 
-        p_z = lrelu(tensor.dot(sbefore, pri_ff_1_w) + pri_ff_1_b)
+        # previous state and current input
+        pri_inp = concatenate([h_tm1, xbelow], axis=1)
+        p_z = lrelu(tensor.dot(pri_inp, pri_ff_1_w) + pri_ff_1_b)
         z_mus = tensor.dot(p_z, pri_ff_2_w) + pri_ff_2_b
         z_dim = z_mus.shape[-1] / 2
         z_mu, z_sigma = z_mus[:, :z_dim], z_mus[:, z_dim:]
 
         if d_ is not None:
-            encoder_hidden = lrelu(tensor.dot(concatenate([sbefore, d_], axis=1), inf_ff_1_w) + inf_ff_1_b)
-            encoder_mus = tensor.dot(encoder_hidden, inf_ff_2_w) + inf_ff_2_b
+            # previous state, backward state and current input
+            inf_inp = concatenate([h_tm1, d_, xbelow], axis=1)
+            inf_inp = lrelu(tensor.dot(inf_inp, inf_ff_1_w) + inf_ff_1_b)
+            encoder_mus = tensor.dot(inf_inp, inf_ff_2_w) + inf_ff_2_b
+            encoder_mus = T.clip(encoder_mus, -10., 10.)
             encoder_mu, encoder_sigma = encoder_mus[:, :z_dim], encoder_mus[:, z_dim:]
-            tild_z_t = encoder_mu + g_s * tensor.exp(0.5 * encoder_sigma)
+            z_smp = encoder_mu + zmuv * tensor.exp(0.5 * encoder_sigma)
             kld = gaussian_kld(encoder_mu, encoder_sigma, z_mu, z_sigma)
             kld = tensor.sum(kld, axis=-1)
 
-            aux_hid = tensor.dot(tild_z_t, aux_ff_1_w) + aux_ff_1_b
+            aux_hid = tensor.dot(z_smp, aux_ff_1_w) + aux_ff_1_b
             aux_hid = lrelu(aux_hid)
             # concatenate with forward state
             if options['use_h_in_aux']:
                 print("Using h_in_aux...")
-                aux_hid = tensor.concatenate([aux_hid, sbefore], axis=1)
+                aux_hid = tensor.concatenate([aux_hid, h_tm1], axis=1)
 
             aux_out = tensor.dot(aux_hid, aux_ff_2_w) + aux_ff_2_b
             aux_out = T.clip(aux_out, -10., 10.)
@@ -427,34 +423,32 @@ def latent_lstm_layer(
             aux_cost = -log_prob_gaussian(disc_d_, mean=aux_mu, log_var=aux_sigma)
             aux_cost = tensor.sum(aux_cost, axis=-1)
         else:
-            tild_z_t = z_mu + g_s * tensor.exp(0.5 * z_sigma)
-            kld = tensor.sum(tild_z_t, axis=-1) * 0.
-            aux_cost = tensor.sum(tild_z_t, axis=-1) * 0.
+            z_smp = z_mu + zmuv * tensor.exp(0.5 * z_sigma)
+            kld = tensor.sum(z_smp, axis=-1) * 0.
+            aux_cost = tensor.sum(z_smp, axis=-1) * 0.
 
-        z = tild_z_t
-        preact = tensor.dot(sbefore, param('U')) + tensor.dot(z, W_cond)
-        preact += sbelow
-        preact += param('b')
+        # transform z
+        gen_out = tensor.dot(z_smp, W_cond)
+        preact = tensor.dot(h_tm1, U) + sbelow + gen_out
 
         i = tensor.nnet.sigmoid(_slice(preact, 0, dim))
         f = tensor.nnet.sigmoid(_slice(preact, 1, dim))
         o = tensor.nnet.sigmoid(_slice(preact, 2, dim))
         c = tensor.tanh(_slice(preact, 3, dim))
 
-        c = f * cell_before + i * c
-        c = mask * c + (1. - mask) * cell_before
+        c = f * c_tm1 + i * c
+        c = mask * c + (1. - mask) * c_tm1
         h = o * tensor.tanh(c)
-        h = mask * h + (1. - mask) * sbefore
-        return h, c, z, kld, aux_cost
+        h = mask * h + (1. - mask) * h_tm1
+        return h, c, z_smp, kld, aux_cost
 
     lstm_state_below = tensor.dot(state_below, param('W')) + param('b')
     if state_below.ndim == 3:
-        lstm_state_below = lstm_state_below.reshape((state_below.shape[0],
-                                                     state_below.shape[1],
-                                                     -1))
+        lstm_state_below = lstm_state_below.reshape((
+            state_below.shape[0], state_below.shape[1], -1))
     if one_step:
         mask = mask.dimshuffle(0, 'x')
-        h, c = _step(mask, lstm_state_below, init_state, init_memory)
+        h, c = _step(mask, state_below, lstm_state_below, init_h0, init_c0)
         rval = [h, c]
     else:
         if mask.ndim == 3 and mask.ndim == state_below.ndim:
@@ -463,8 +457,11 @@ def latent_lstm_layer(
             mask = mask.dimshuffle(0, 1, 'x')
 
         rval, updates = theano.scan(
-            _step, sequences=[mask, lstm_state_below, back_states, gaussian_s],
-            outputs_info=[init_state, init_memory, None, None, None],
+                _step, sequences=[mask, state_below, lstm_state_below, back_states, gaussian_s],
+            outputs_info=[init_h0, init_c0, None, None, None],
             name=parname(prefix, '_layers'), non_sequences=non_seqs, strict=True, n_steps=nsteps)
+        if options.get('carry_h0', False):
+            print('- Adding update state...')
+            updates[init_state] = tensor.concatenate([
+                rval[0][-1], rval[1][-1]], axis=1)
     return [rval, updates]
-
