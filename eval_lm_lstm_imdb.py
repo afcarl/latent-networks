@@ -34,6 +34,7 @@ numpy.random.seed(seed)
 def pred_probs(f_log_probs, f_iwae_eval, options, data, source='valid'):
     rvals = []
     iwae_rvals = []
+    kls = []
     n_done = 0
 
     def get_data(data, source):
@@ -64,13 +65,16 @@ def pred_probs(f_log_probs, f_iwae_eval, options, data, source='valid'):
         for val in elbo:
             rvals.append(val)
         # IWAE numbers
-        iwae = iwae_multi_eval(
+        iwae, kl = iwae_multi_eval(
             x, y, x_mask, num_iwae_iters, f_iwae_eval,
-            num_iwae_samps, options['dim_z'])
+            num_iwae_samps, options['dim_z'], get_kl=True)
+        iwae = np.ravel(kl)
         iwae = np.ravel(iwae)
         assert len(iwae) == x.shape[1]
         for val in iwae:
             iwae_rvals.append(val)
+            kls.append(kl)
+    print("KL: ", numpy.mean(kls))
     return numpy.exp(numpy.array(rvals).sum() / n_done), \
         numpy.exp(numpy.array(iwae_rvals).sum() / n_done)
 
