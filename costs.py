@@ -9,7 +9,7 @@ def np_log_mean_exp(x, axis=None):
     return lme
 
 
-def iwae_multi_eval(x, y, x_mask, iters, cost_func, iwae_num, dim_z):
+def iwae_multi_eval(x, y, x_mask, iters, cost_func, iwae_num, dim_z, get_kl=False):
     # slow multi-pass evaluation of IWAE bound.
     rx = []
     # all the inputs are transpose, axis=1 is batch_size
@@ -36,5 +36,7 @@ def iwae_multi_eval(x, y, x_mask, iters, cost_func, iwae_num, dim_z):
     # compute the IWAE bound for each example in x
     log_ws_mat = log_p_xIz + log_p_z - log_q_zIx
     iwae_bounds = -1.0 * np_log_mean_exp(log_ws_mat, axis=1)
+    if get_kl:
+        return iwae_bounds, log_q_zIx - log_pz
     return iwae_bounds
 
