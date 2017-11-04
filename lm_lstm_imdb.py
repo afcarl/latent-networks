@@ -717,9 +717,9 @@ def build_gen_model(tparams, options, x, y, x_mask, zmuv, states_rev):
     print('Dropout set to {:.2f}'.format(options['dropout']))
     x_emb = dropout_layer(x_emb, is_train, trng, p=options['dropout'])
     rvals, updates_gen = get_layer('latent_lstm')[1](
-       tparams, state_below=x_emb, options=options,
-       prefix='encoder', mask=x_mask, gaussian_s=zmuv,
-       back_states=states_rev)
+            tparams, state_below=x_emb, options=options,
+            prefix='encoder', mask=x_mask, gaussian_s=zmuv,
+            back_states=states_rev)
 
     states_gen, memories_gen, z, log_pz, log_qzIx, kld, rec_cost_rev = (
             rvals[0], rvals[1], rvals[2], rvals[3], rvals[4], rvals[5], rvals[6])
@@ -777,7 +777,7 @@ def build_sampler(tparams, options, trng, provide_z=False):
     print('Building f_next..')
     inps = [last_word, init_state, init_memory, gaussian_sampled]
     outs = [next_probs, next_state, next_memory]
-    f_next = theano.function(inps, outs, name='f_next')
+    f_next = theano.function(inps, outs, name='f_next', givens={is_train: np.float32(0.)})
     print('Done')
 
     return f_next

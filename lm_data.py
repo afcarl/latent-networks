@@ -532,6 +532,14 @@ class IMDB_JMARS():
             batch[i, :len(sentence)] = sentence
         return batch
 
+    def pad_sent(self, sentence, max_len=20):
+        """
+        Pad each sentence with __pad__ token so they all have the same length.
+        """
+        batch = self.pad_id * np.ones((1, max_len), dtype=int)
+        batch[0, :len(sentence)] = sentence
+        return batch
+
     def prepare_batch(self, sentences):
         """
         Add <S> and </S> tokens to each sentence and pad the batch.
