@@ -49,9 +49,10 @@ def main():
                       batch_size=args.nb_samples, topk=16000)
     model_options["dim_input"] = data.voc_size
 
-    for num, (x, y, x_mask) in enumerate(data.get_valid_batch()):
+    for num, (x, y, x_mask) in enumerate(data.get_train_batch()):
         data.print_batch(x)
-        break
+        if num == 1:
+            break
 
     params = init_params(model_options)
     print('Loading model parameters...')
@@ -61,15 +62,7 @@ def main():
     x = T.lmatrix('x')
     y = T.lmatrix('y')
     x_mask = T.matrix('x_mask')
-    # Debug test_value
-    x.tag.test_value = np.random.rand(11, 20).astype("int64")
-    y.tag.test_value = np.random.rand(11, 20).astype("int64")
-    x_mask.tag.test_value = np.ones((11, 20)).astype("float32")
-    is_train.tag.test_value = np.float32(0.)
-
     zmuv = T.tensor3('zmuv')
-    zmuv.tag.test_value = np.ones((
-        11, 20, model_options['dim_z'])).astype("float32")
 
     # build the symbolic computational graph
     nll_rev, states_rev, updates_rev = \
@@ -80,9 +73,27 @@ def main():
     # Build sampler
     f_next = build_sampler(tparams, model_options, trng, provide_z=True)
     # Build inference
-    get_latents = theano.function([x, y, x_mask, zmuv], z,
-                                  updates=(updates_gen + updates_rev),
-                                  givens={is_train: np.float32(0.)})
+    get_latents = theano.function([x, y, x_mask, zmuv], [z, log_pxIz, log_pz, log_qzIx],
+            updates=(updates_gen + updates_rev),
+            givens={is_train: np.float32(0.)})
+
+    def _get_iwae_latents(batch, nrep=50):
+        batch_rep = [np.repeat(x, nrep, 0).T for x in batch]
+        zmuv = rng.normal(loc=0.0, scale=1.0, size=(
+            batch_rep[0].shape[0], nrep, model_options['dim_z'])).astype('float32')
+        z, log_pxIz, log_pz, log_qzIx = \
+                get_latents(batch_rep[0], batch_rep[1], batch_rep[2], zmuv)
+        log_ws = np.ravel(log_pxIz - log_qzIx + log_pz)
+        log_ws_minus_max = log_ws - np.max(log_ws)
+        ws = np.exp(log_ws_minus_max)
+        ws_norm = ws / np.sum(ws)
+        max_z = np.argmax(ws_norm)
+        return z[:, [max_z], :]
+
+    s1_id = [data.word2idx.get(word, data.unk_id) for word in 'the film is great'.split()]
+    batch = data.prepare_batch([s1_id])
+    _get_iwae_latents(batch)
+
     while True:
         s1 = raw_input("s1:").strip().split()
         s2 = raw_input("s2:").strip().split()
@@ -90,48 +101,25 @@ def main():
         s1_id = [data.word2idx.get(word, data.unk_id) for word in s1]
         s2_id = [data.word2idx.get(word, data.unk_id) for word in s2]
 
-        batch = data.prepare_batch([s1_id, s2_id])
-        data.print_batch(batch[0])
-
-        zmuv = rng.normal(loc=0.0, scale=1.0, size=(
-            batch[0].shape[1], 2, model_options['dim_z'])).astype('float32')
-        batch_z = get_latents(batch[0].T, batch[1].T, batch[2].T, zmuv)
-        z1 = batch_z[:, [0], :]
-        z2 = batch_z[:, [1], :]
-
-        print("Beam Search")
-        data.print_batch(batch[0][[0]], eos_id=data.eos_id, print_number=False)
-        for i in np.linspace(0, 1, 11):
-            print("{}: ".format(i), end="")
-            z = ((1 - i) * z1) + (i * z2)  # Interpolate latent
-            z = np.repeat(z, 10, axis=1)
-            sample, sample_score = beam_sample(
-                tparams, f_next, model_options,
-                maxlen=20, zmuv=z, unk_id=data.unk_id,
-                eos_id=data.eos_id, bos_id=data.bos_id)
-            sample = [sample[0]]
-            data.print_batch(sample, eos_id=data.eos_id, print_number=False)
-
-        data.print_batch(batch[0][[1]], eos_id=data.eos_id, print_number=False)
+        batch = data.prepare_batch(data.pad_sent(s1_id))
+        z1 = _get_iwae_latents(batch, nrep=200)
+        batch = data.prepare_batch(data.pad_sent(s2_id))
+        z2 = _get_iwae_latents(batch, nrep=200)
 
         # Interpolation
         print("Samples")
-        data.print_batch(batch[0][[0]], eos_id=data.eos_id, print_number=False)
         for i in np.linspace(0, 1, 11):
             print("{}: ".format(i), end="")
             z = ((1 - i) * z1) + (i * z2)  # Interpolate latent
-            z = np.repeat(z, 10, axis=1)
+            z = np.repeat(z, 20, axis=1)
             sample, sample_score = gen_sample(
-                tparams, f_next, model_options,
-                maxlen=20, argmax=False, zmuv=z,
-                unk_id=data.unk_id, eos_id=data.eos_id, bos_id=data.bos_id)
+                    tparams, f_next, model_options,
+                    maxlen=20, argmax=False, zmuv=z,
+                    unk_id=data.unk_id, eos_id=data.eos_id, bos_id=data.bos_id)
             sample = [sample.T[np.argsort(sample_score)[-1]]]
             data.print_batch(sample, eos_id=data.eos_id, print_number=False)
 
-        data.print_batch(batch[0][[1]], eos_id=data.eos_id, print_number=False)
-
         print("Argmax")
-        data.print_batch(batch[0][[0]], eos_id=data.eos_id, print_number=False)
         for i in np.linspace(0, 1, 11):
             print("{}: ".format(i), end="")
             z = ((1 - i) * z1) + (i * z2)  # Interpolate latent
@@ -140,9 +128,7 @@ def main():
                 maxlen=20, argmax=True, zmuv=z,
                 unk_id=data.unk_id, eos_id=data.eos_id, bos_id=data.bos_id)
             data.print_batch(sample.T, eos_id=data.eos_id, print_number=False)
-        data.print_batch(batch[0][[1]], eos_id=data.eos_id, print_number=False)
         raw_input("-- Next --")
-        sys.exit(0)
 
 
 if __name__ == '__main__':
